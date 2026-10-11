@@ -23,7 +23,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 tts?.setLanguage(Locale.US)
             }
 
-            // Kunci utama: paksa TTS pakai volume ALARM
             try {
                 val attrs = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ALARM)
@@ -46,11 +45,18 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         if (isReady) speakInternal(text) else queue.add(text)
     }
 
+    // ★ METHOD BARU: stop TTS yang sedang berbicara
+    fun stop() {
+        try { tts?.stop() } catch (_: Exception) {}
+    }
+
     private fun speakInternal(text: String) {
         try {
-            // Bundle dengan stream ALARM biar lebih kuat lagi
             val params = android.os.Bundle()
-            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_ALARM)
+            params.putInt(
+                TextToSpeech.Engine.KEY_PARAM_STREAM,
+                android.media.AudioManager.STREAM_ALARM
+            )
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "u_${System.currentTimeMillis()}")
         } catch (_: Exception) {}
     }
