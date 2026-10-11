@@ -10,9 +10,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.media.AudioAttributes
 import android.media.AudioManager
-import android.media.RingtoneManager
 import android.media.ToneGenerator
 import android.os.BatteryManager
 import android.os.Build
@@ -225,21 +223,13 @@ class BatteryService : Service() {
             )
             nm.createNotificationChannel(monitorCh)
 
-            val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-
+            // Channel alert: SILENT (suara dari MP3 custom)
             val alertCh = NotificationChannel(
                 "speakcharger_alert", "Alert Baterai",
                 NotificationManager.IMPORTANCE_HIGH
             )
             alertCh.enableVibration(false)
-            if (alarmUri != null) {
-                val attrs = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-                alertCh.setSound(alarmUri, attrs)
-            }
+            alertCh.setSound(null, null)
             try { alertCh.setBypassDnd(true) } catch (_: Exception) {}
             nm.createNotificationChannel(alertCh)
         }
@@ -248,11 +238,22 @@ class BatteryService : Service() {
     private fun showAlertNotification(pct: Int, text: String) {
         try {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            val pi = PendingIntent.getActivity(
+
+            val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val fullScreenPi = PendingIntent.getActivity(
+                this, 5000 + pct,
+                fullScreenIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            val contentPi = PendingIntent.getActivity(
                 this, pct,
                 Intent(this, MainActivity::class.java),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
+
             val b = NotificationCompat.Builder(this, "speakcharger_alert")
                 .setContentTitle("SpeakCharger - Baterai $pct%")
                 .setContentText(text)
@@ -260,11 +261,9 @@ class BatteryService : Service() {
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setAutoCancel(true)
-                .setContentIntent(pi)
-            if (Build.VERSION.SDK_INT < 26) {
-                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                if (uri != null) b.setSound(uri)
-            }
+                .setContentIntent(contentPi)
+                .setFullScreenIntent(fullScreenPi, true)
+
             nm.notify(1000 + pct, b.build())
         } catch (_: Exception) {}
     }
