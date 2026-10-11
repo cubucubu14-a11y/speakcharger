@@ -10,7 +10,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
@@ -22,7 +21,6 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
-import androidx.core.app.ServiceCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -40,9 +38,10 @@ class BatteryService : Service() {
     private var isChargingNow = false
 
     private val handler = Handler(Looper.getMainLooper())
+    private var alertGeneration = 0
 
     private val LEVEL_REPEAT_INTERVAL = 4500L
-    private val FULL_REPEAT_INTERVAL = 3500L
+    private val FULL_REPEAT_INTERVAL = 5000L
     private val ALARM_INTERVAL_MS = 60000L
 
     private val batteryReceiver = object : BroadcastReceiver() {
@@ -68,22 +67,7 @@ class BatteryService : Service() {
         createAlertChannel()
 
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-
-        // ★ KUNCI: pakai tipe MEDIA_PLAYBACK biar audio boleh keluar saat background
-        if (Build.VERSION.SDK_INT >= 29) {
-            try {
-                ServiceCompat.startForeground(
-                    this,
-                    1,
-                    buildNotification("Memulai..."),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                )
-            } catch (_: Exception) {
-                startForeground(1, buildNotification("Memulai..."))
-            }
-        } else {
-            startForeground(1, buildNotification("Memulai..."))
-        }
+        startForeground(1, buildNotification("Memulai..."))
 
         checkBatteryNow()
         scheduleAlarm()
@@ -181,82 +165,54 @@ class BatteryService : Service() {
     }
 
     private fun startAlert(pct: Int) {
-        val teksNotif = if (pct == 100) {
-            "Baterai FULL! Cabut kabel sekarang!"
-        } else {
-            "Baterai $pct%"
-        }
+        val teksNotif = if (pct == 100) "Baterai FULL! Cabut kabel!" else "Baterai $pct%"
         showAlertNotification(pct, teksNotif)
 
+        stopAllPlayback()
+        alertGeneration++
+        val gen = alertGeneration
+
         if (pct == 100) {
-            playFullRepeat()
+            playFullLoop(gen)
         } else {
-            playLevelSequence(pct)
+            playLevelSequence(gen, pct, 0)
         }
     }
 
-    private var repeatGeneration = 0
+    private fun playBeepThenFile(pct: Int, onFinish: () -> Unit) {
+        try { toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 350) } catch (_: Exception) {}
+        handler.postDelayed({
+            tts.playFor(pct) { onFinish() }
+        }, 500)
+    }
 
-    private fun playLevelSequence(pct: Int) {
-        repeatGeneration++
-        val gen = repeatGeneration
-        val kata = when (pct) {
-            5 -> "lima"
-            10 -> "sepuluh"
-            15 -> "lima belas"
-            20 -> "dua puluh"
-            25 -> "dua puluh lima"
-            30 -> "tiga puluh"
-            35 -> "tiga puluh lima"
-            40 -> "empat puluh"
-            45 -> "empat puluh lima"
-            50 -> "lima puluh"
-            55 -> "lima puluh lima"
-            60 -> "enam puluh"
-            65 -> "enam puluh lima"
-            70 -> "tujuh puluh"
-            75 -> "tujuh puluh lima"
-            80 -> "delapan puluh"
-            85 -> "delapan puluh lima"
-            90 -> "sembilan puluh"
-            95 -> "sembilan puluh lima"
-            else -> "$pct"
-        }
-        for (i in 0 until 3) {
-            val delay = i * LEVEL_REPEAT_INTERVAL
+    private fun playLevelSequence(gen: Int, pct: Int, iteration: Int) {
+        if (gen != alertGeneration) return
+        if (iteration >= 3) return
+
+        playBeepThenFile(pct) {
+            if (gen != alertGeneration) return@playBeepThenFile
             handler.postDelayed({
-                if (gen != repeatGeneration) return@postDelayed
-                try { toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250) } catch (_: Exception) {}
-                handler.postDelayed({
-                    if (gen != repeatGeneration) return@postDelayed
-                    tts.speak("Baterai $kata persen")
-                }, 300)
-            }, delay)
+                if (gen == alertGeneration) playLevelSequence(gen, pct, iteration + 1)
+            }, 1200)
         }
     }
 
-    private fun playFullRepeat() {
-        repeatGeneration++
-        val gen = repeatGeneration
-        val loop = object : Runnable {
-            override fun run() {
-                if (gen != repeatGeneration) return
-                try {
-                    toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250)
-                    handler.postDelayed({
-                        try { toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250) } catch (_: Exception) {}
-                    }, 300)
-                    handler.postDelayed({
-                        try { toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250) } catch (_: Exception) {}
-                    }, 600)
-                    handler.postDelayed({
-                        if (gen == repeatGeneration) tts.speak("Baterai full, cabut kabel")
-                    }, 1000)
-                } catch (_: Exception) {}
-                handler.postDelayed(this, FULL_REPEAT_INTERVAL)
-            }
+    private fun playFullLoop(gen: Int) {
+        if (gen != alertGeneration) return
+        playBeepThenFile(100) {
+            if (gen != alertGeneration) return@playBeepThenFile
+            handler.postDelayed({
+                if (gen == alertGeneration) playFullLoop(gen)
+            }, 1500)
         }
-        handler.post(loop)
+    }
+
+    private fun stopAllPlayback() {
+        alertGeneration++
+        handler.removeCallbacksAndMessages(null)
+        try { tts.stop() } catch (_: Exception) {}
+        try { toneGen.stopTone() } catch (_: Exception) {}
     }
 
     private fun createAlertChannel() {
@@ -264,25 +220,19 @@ class BatteryService : Service() {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 
             val monitorCh = NotificationChannel(
-                "speakcharger_monitor",
-                "Monitor Baterai",
+                "speakcharger_monitor", "Monitor Baterai",
                 NotificationManager.IMPORTANCE_LOW
             )
-            monitorCh.description = "Notifikasi monitor biasa"
             nm.createNotificationChannel(monitorCh)
 
             val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
 
             val alertCh = NotificationChannel(
-                "speakcharger_alert",
-                "Alert Baterai",
+                "speakcharger_alert", "Alert Baterai",
                 NotificationManager.IMPORTANCE_HIGH
             )
-            alertCh.description = "Alert kelipatan 5%"
             alertCh.enableVibration(false)
-            alertCh.enableLights(true)
-
             if (alarmUri != null) {
                 val attrs = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_ALARM)
@@ -298,14 +248,12 @@ class BatteryService : Service() {
     private fun showAlertNotification(pct: Int, text: String) {
         try {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-
             val pi = PendingIntent.getActivity(
                 this, pct,
                 Intent(this, MainActivity::class.java),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
-
-            val builder = NotificationCompat.Builder(this, "speakcharger_alert")
+            val b = NotificationCompat.Builder(this, "speakcharger_alert")
                 .setContentTitle("SpeakCharger - Baterai $pct%")
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
@@ -313,14 +261,11 @@ class BatteryService : Service() {
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setAutoCancel(true)
                 .setContentIntent(pi)
-
             if (Build.VERSION.SDK_INT < 26) {
-                val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-                builder.setSound(alarmUri)
+                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                if (uri != null) b.setSound(uri)
             }
-
-            nm.notify(1000 + pct, builder.build())
+            nm.notify(1000 + pct, b.build())
         } catch (_: Exception) {}
     }
 
@@ -333,7 +278,6 @@ class BatteryService : Service() {
 
     private fun buildNotification(text: String): Notification {
         val channelId = if (Build.VERSION.SDK_INT >= 26) "speakcharger_monitor" else "speakcharger_ch"
-
         if (Build.VERSION.SDK_INT < 26) {
             val ch = NotificationChannel(
                 "speakcharger_ch", "SpeakCharger", NotificationManager.IMPORTANCE_LOW
@@ -341,13 +285,11 @@ class BatteryService : Service() {
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
                 .createNotificationChannel(ch)
         }
-
         val pi = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-
         return NotificationCompat.Builder(this, channelId)
             .setContentTitle("SpeakCharger Aktif")
             .setContentText(text)
@@ -366,33 +308,33 @@ class BatteryService : Service() {
 
     private fun scheduleAlarm() {
         try {
-            val alarmIntent = Intent(this, BatteryService::class.java).apply {
+            val ai = Intent(this, BatteryService::class.java).apply {
                 action = "SPEAKCHARGER_ALARM_CHECK"
             }
-            val operation = PendingIntent.getService(
-                this, 100, alarmIntent,
+            val op = PendingIntent.getService(
+                this, 100, ai,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            val showIntent = PendingIntent.getActivity(
+            val si = PendingIntent.getActivity(
                 this, 101,
                 Intent(this, MainActivity::class.java),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
-            val triggerAt = System.currentTimeMillis() + ALARM_INTERVAL_MS
             alarmManager.setAlarmClock(
-                AlarmManager.AlarmClockInfo(triggerAt, showIntent),
-                operation
+                AlarmManager.AlarmClockInfo(
+                    System.currentTimeMillis() + ALARM_INTERVAL_MS, si
+                ), op
             )
         } catch (_: Exception) {}
     }
 
     private fun cancelAlarm() {
         try {
-            val alarmIntent = Intent(this, BatteryService::class.java).apply {
+            val ai = Intent(this, BatteryService::class.java).apply {
                 action = "SPEAKCHARGER_ALARM_CHECK"
             }
             val pi = PendingIntent.getService(
-                this, 100, alarmIntent,
+                this, 100, ai,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             alarmManager.cancel(pi)
@@ -407,16 +349,15 @@ class BatteryService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         try {
-            val restartService = Intent(applicationContext, this.javaClass)
-            restartService.setPackage(packageName)
+            val rs = Intent(applicationContext, this.javaClass)
+            rs.setPackage(packageName)
             val pi = PendingIntent.getService(
-                this, 1, restartService,
+                this, 1, rs,
                 PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
             )
             alarmManager.set(
                 AlarmManager.ELAPSED_REALTIME,
-                SystemClock.elapsedRealtime() + 1000,
-                pi
+                SystemClock.elapsedRealtime() + 1000, pi
             )
         } catch (_: Exception) {}
         super.onTaskRemoved(rootIntent)
@@ -428,8 +369,8 @@ class BatteryService : Service() {
         super.onDestroy()
         try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
         cancelAlarm()
+        stopAllPlayback()
         handler.removeCallbacksAndMessages(null)
-        try { tts.stop() } catch (_: Exception) {}
         tts.shutdown()
         toneGen.release()
     }
