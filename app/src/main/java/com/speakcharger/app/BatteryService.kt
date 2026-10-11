@@ -1,5 +1,6 @@
 package com.speakcharger.app
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -16,24 +17,33 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class BatteryService : Service() {
 
     private lateinit var tts: TtsManager
     private lateinit var toneGen: ToneGenerator
+    private lateinit var alarmManager: AlarmManager
+    private lateinit var alarmIntent: PendingIntent
+
     private var lastSpokenLevel = -1
     private var firstFire = true
     private var everCharged = false
-    private val handler = Handler(Looper.getMainLooper())
+    private var currentPct = -1
+    private var isChargingNow = false
 
-    // Generation ID: tiap alert baru, ID naik. Yang lama otomatis batal.
+    private val handler = Handler(Looper.getMainLooper())
     private var alertGeneration = 0
 
-    // Timing (ms)
     private val LEVEL_REPEAT_INTERVAL = 4500L
     private val FULL_REPEAT_INTERVAL = 3500L
+    private val ALARM_INTERVAL_MS = 60000L
 
+    // ==== Receiver untuk perubahan baterai (realtime) ====
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_BATTERY_CHANGED) return
@@ -41,14 +51,39 @@ class BatteryService : Service() {
         }
     }
 
+    // ==== Heartbeat: update notifikasi tiap 30 detik ====
+    private val heartbeatRunnable = object : Runnable {
+        override fun run() {
+            refreshNotification()
+            handler.postDelayed(this, 30000)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         tts = TtsManager(this)
         toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
+        alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        startForeground(1, buildNotification("Menunggu data baterai..."))
+        startForeground(1, buildNotification("Memulai..."))
+
+        // Cek baterai awal langsung
+        checkBatteryNow()
+
+        // Mulai heartbeat
+        handler.postDelayed(heartbeatRunnable, 30000)
     }
 
+    // ==== Baca baterai saat ini juga (tanpa tunggu broadcast) ====
+    private fun checkBatteryNow() {
+        try {
+            val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            if (sticky != null) handleBattery(sticky)
+        } catch (_: Exception) {}
+    }
+
+    // ==== Handle perubahan baterai ====
     private fun handleBattery(intent: Intent) {
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
@@ -63,9 +98,9 @@ class BatteryService : Service() {
                          status == BatteryManager.BATTERY_STATUS_CHARGING ||
                          status == BatteryManager.BATTERY_STATUS_FULL
 
-        updateNotification(
-            "Baterai $pct% - " + if (isCharging) "charging" else "tidak charging"
-        )
+        currentPct = pct
+        isChargingNow = isCharging
+        refreshNotification()
 
         if (firstFire) {
             firstFire = false
@@ -76,14 +111,11 @@ class BatteryService : Service() {
 
         if (isCharging) {
             everCharged = true
-
-            // ★ FIX BUG: deteksi kalau MELEWATI kelipatan 5
             val crossed = findCrossedLevel(lastSpokenLevel, pct, 5)
             if (crossed > 0) {
                 lastSpokenLevel = pct
                 startAlert(crossed)
             } else if (pct > lastSpokenLevel) {
-                // update posisi terakhir walau gak lewat kelipatan 5
                 lastSpokenLevel = pct
             }
         } else {
@@ -94,28 +126,20 @@ class BatteryService : Service() {
         }
     }
 
-    // Cari kelipatan `step` tertinggi yang LEWAT di antara from (exclusive) dan to (inclusive)
-    // Contoh: from=62, to=66, step=5 → return 65
     private fun findCrossedLevel(from: Int, to: Int, step: Int): Int {
         if (to <= from) return -1
-        var n = to - (to % step)   // kelipatan terbesar <= to
-        if (n <= from) {
-            n -= step              // mundur satu step
-        }
+        var n = to - (to % step)
+        if (n <= from) n -= step
         if (n <= from || n <= 0) return -1
         return n
     }
 
+    // ==== Alert logic ====
     private fun startAlert(pct: Int) {
         cancelAll()
         alertGeneration++
         val gen = alertGeneration
-
-        if (pct == 100) {
-            playFullSequence(gen)
-        } else {
-            playLevelSequence(gen, pct, 0)
-        }
+        if (pct == 100) playFullSequence(gen) else playLevelSequence(gen, pct, 0)
     }
 
     private fun playLevelSequence(gen: Int, pct: Int, iteration: Int) {
@@ -183,8 +207,18 @@ class BatteryService : Service() {
 
     private fun cancelAll() {
         alertGeneration++
+        val backupHeartbeat = heartbeatRunnable
         handler.removeCallbacksAndMessages(null)
         try { tts.stop() } catch (_: Exception) {}
+        handler.postDelayed(backupHeartbeat, 30000)
+    }
+
+    // ==== Notifikasi + timestamp heartbeat ====
+    private fun refreshNotification() {
+        val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        val pctStr = if (currentPct >= 0) "$currentPct%" else "--"
+        val statusStr = if (isChargingNow) "charging" else "tidak charging"
+        updateNotification("Baterai $pctStr - $statusStr • $timeStr")
     }
 
     private fun buildNotification(text: String): Notification {
@@ -222,8 +256,64 @@ class BatteryService : Service() {
         } catch (_: Exception) {}
     }
 
+    // ==== Setup AlarmManager sebagai backup ====
+    private fun scheduleAlarm() {
+        try {
+            val intent = Intent(this, BatteryService::class.java).apply {
+                action = "SPEAKCHARGER_ALARM_CHECK"
+            }
+            alarmIntent = PendingIntent.getService(
+                this, 100, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val triggerAt = SystemClock.elapsedRealtime() + ALARM_INTERVAL_MS
+
+            if (Build.VERSION.SDK_INT >= 23) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, alarmIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, alarmIntent
+                )
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun cancelAlarm() {
+        try {
+            if (::alarmIntent.isInitialized) {
+                alarmManager.cancel(alarmIntent)
+            }
+        } catch (_: Exception) {}
+    }
+
+    // ==== onStartCommand dipanggil tiap alarm fire ====
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_NOT_STICKY
+        // Cek baterai langsung
+        checkBatteryNow()
+        // Jadwal alarm berikutnya
+        scheduleAlarm()
+        return START_STICKY
+    }
+
+    // ==== Swipe dari recent → restart ====
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        try {
+            val restartService = Intent(applicationContext, this.javaClass)
+            restartService.setPackage(packageName)
+            val pi = PendingIntent.getService(
+                this, 1, restartService,
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+            alarmManager.set(
+                AlarmManager.ELAPSED_REALTIME,
+                SystemClock.elapsedRealtime() + 1000,
+                pi
+            )
+        } catch (_: Exception) {}
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -231,6 +321,7 @@ class BatteryService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
+        cancelAlarm()
         cancelAll()
         tts.shutdown()
         toneGen.release()
