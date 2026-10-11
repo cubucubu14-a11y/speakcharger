@@ -10,7 +10,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.RingtoneManager
 import android.media.ToneGenerator
 import android.os.BatteryManager
 import android.os.Build
@@ -19,6 +22,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -28,8 +32,6 @@ class BatteryService : Service() {
     private lateinit var tts: TtsManager
     private lateinit var toneGen: ToneGenerator
     private lateinit var alarmManager: AlarmManager
-    private lateinit var alarmIntent: PendingIntent
-    private lateinit var alarmShowIntent: PendingIntent
 
     private var lastSpokenLevel = -1
     private var firstFire = true
@@ -38,7 +40,6 @@ class BatteryService : Service() {
     private var isChargingNow = false
 
     private val handler = Handler(Looper.getMainLooper())
-    private var alertGeneration = 0
 
     private val LEVEL_REPEAT_INTERVAL = 4500L
     private val FULL_REPEAT_INTERVAL = 3500L
@@ -51,10 +52,10 @@ class BatteryService : Service() {
         }
     }
 
-    private val heartbeatRunnable = object : Runnable {
+    private val pollRunnable = object : Runnable {
         override fun run() {
-            refreshNotification()
-            handler.postDelayed(this, 30000)
+            checkBatteryNow()
+            handler.postDelayed(this, 15000)
         }
     }
 
@@ -64,18 +65,71 @@ class BatteryService : Service() {
         toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
         alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
 
+        createAlertChannel()
+
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        startForeground(1, buildNotification("Memulai..."))
+
+        // ★ KUNCI: pakai tipe MEDIA_PLAYBACK biar audio boleh keluar saat background
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                ServiceCompat.startForeground(
+                    this,
+                    1,
+                    buildNotification("Memulai..."),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } catch (_: Exception) {
+                startForeground(1, buildNotification("Memulai..."))
+            }
+        } else {
+            startForeground(1, buildNotification("Memulai..."))
+        }
 
         checkBatteryNow()
-        scheduleAlarmClock()
-        handler.postDelayed(heartbeatRunnable, 30000)
+        scheduleAlarm()
+        handler.postDelayed(pollRunnable, 15000)
     }
 
     private fun checkBatteryNow() {
         try {
+            val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+            val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            if (pct < 0) return
+
             val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            if (sticky != null) handleBattery(sticky)
+            if (sticky == null) return
+
+            val plugged = sticky.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+            val status = sticky.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+            val isCharging = plugged == BatteryManager.BATTERY_PLUGGED_AC ||
+                             plugged == BatteryManager.BATTERY_PLUGGED_USB ||
+                             plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS ||
+                             status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                             status == BatteryManager.BATTERY_STATUS_FULL
+
+            currentPct = pct
+            isChargingNow = isCharging
+            refreshNotification()
+
+            if (firstFire) {
+                firstFire = false
+                lastSpokenLevel = pct
+                if (isCharging) everCharged = true
+                return
+            }
+
+            if (isCharging) {
+                everCharged = true
+                val crossed = findCrossedLevel(lastSpokenLevel, pct, 5)
+                if (crossed > 0) {
+                    lastSpokenLevel = pct
+                    startAlert(crossed)
+                } else if (pct > lastSpokenLevel) {
+                    lastSpokenLevel = pct
+                }
+            } else {
+                if (everCharged) stopSelf()
+            }
         } catch (_: Exception) {}
     }
 
@@ -114,10 +168,7 @@ class BatteryService : Service() {
                 lastSpokenLevel = pct
             }
         } else {
-            if (everCharged) {
-                cancelAll()
-                stopSelf()
-            }
+            if (everCharged) stopSelf()
         }
     }
 
@@ -130,24 +181,25 @@ class BatteryService : Service() {
     }
 
     private fun startAlert(pct: Int) {
-        cancelAll()
-        alertGeneration++
-        val gen = alertGeneration
-        if (pct == 100) playFullSequence(gen) else playLevelSequence(gen, pct, 0)
+        val teksNotif = if (pct == 100) {
+            "Baterai FULL! Cabut kabel sekarang!"
+        } else {
+            "Baterai $pct%"
+        }
+        showAlertNotification(pct, teksNotif)
+
+        if (pct == 100) {
+            playFullRepeat()
+        } else {
+            playLevelSequence(pct)
+        }
     }
 
-    private fun playLevelSequence(gen: Int, pct: Int, iteration: Int) {
-        if (gen != alertGeneration) return
-        if (iteration >= 3) return
+    private var repeatGeneration = 0
 
-        toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250)
-        handler.postDelayed({
-            if (gen == alertGeneration) toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250)
-        }, 300)
-        handler.postDelayed({
-            if (gen == alertGeneration) toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250)
-        }, 600)
-
+    private fun playLevelSequence(pct: Int) {
+        repeatGeneration++
+        val gen = repeatGeneration
         val kata = when (pct) {
             5 -> "lima"
             10 -> "sepuluh"
@@ -170,41 +222,106 @@ class BatteryService : Service() {
             95 -> "sembilan puluh lima"
             else -> "$pct"
         }
-        handler.postDelayed({
-            if (gen == alertGeneration) tts.speak("Baterai $kata persen")
-        }, 1000)
-
-        handler.postDelayed({
-            if (gen == alertGeneration) playLevelSequence(gen, pct, iteration + 1)
-        }, LEVEL_REPEAT_INTERVAL)
+        for (i in 0 until 3) {
+            val delay = i * LEVEL_REPEAT_INTERVAL
+            handler.postDelayed({
+                if (gen != repeatGeneration) return@postDelayed
+                try { toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250) } catch (_: Exception) {}
+                handler.postDelayed({
+                    if (gen != repeatGeneration) return@postDelayed
+                    tts.speak("Baterai $kata persen")
+                }, 300)
+            }, delay)
+        }
     }
 
-    private fun playFullSequence(gen: Int) {
-        if (gen != alertGeneration) return
-
-        toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250)
-        handler.postDelayed({
-            if (gen == alertGeneration) toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250)
-        }, 300)
-        handler.postDelayed({
-            if (gen == alertGeneration) toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250)
-        }, 600)
-
-        handler.postDelayed({
-            if (gen == alertGeneration) tts.speak("Baterai full, cabut kabel")
-        }, 1000)
-
-        handler.postDelayed({
-            if (gen == alertGeneration) playFullSequence(gen)
-        }, FULL_REPEAT_INTERVAL)
+    private fun playFullRepeat() {
+        repeatGeneration++
+        val gen = repeatGeneration
+        val loop = object : Runnable {
+            override fun run() {
+                if (gen != repeatGeneration) return
+                try {
+                    toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250)
+                    handler.postDelayed({
+                        try { toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250) } catch (_: Exception) {}
+                    }, 300)
+                    handler.postDelayed({
+                        try { toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 250) } catch (_: Exception) {}
+                    }, 600)
+                    handler.postDelayed({
+                        if (gen == repeatGeneration) tts.speak("Baterai full, cabut kabel")
+                    }, 1000)
+                } catch (_: Exception) {}
+                handler.postDelayed(this, FULL_REPEAT_INTERVAL)
+            }
+        }
+        handler.post(loop)
     }
 
-    private fun cancelAll() {
-        alertGeneration++
-        val keepHeart = heartbeatRunnable
-        handler.removeCallbacksAndMessages(null)
-        try { tts.stop() } catch (_: Exception) {}
-        handler.postDelayed(keepHeart, 30000)
+    private fun createAlertChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+
+            val monitorCh = NotificationChannel(
+                "speakcharger_monitor",
+                "Monitor Baterai",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            monitorCh.description = "Notifikasi monitor biasa"
+            nm.createNotificationChannel(monitorCh)
+
+            val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+
+            val alertCh = NotificationChannel(
+                "speakcharger_alert",
+                "Alert Baterai",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+            alertCh.description = "Alert kelipatan 5%"
+            alertCh.enableVibration(false)
+            alertCh.enableLights(true)
+
+            if (alarmUri != null) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+                alertCh.setSound(alarmUri, attrs)
+            }
+            try { alertCh.setBypassDnd(true) } catch (_: Exception) {}
+            nm.createNotificationChannel(alertCh)
+        }
+    }
+
+    private fun showAlertNotification(pct: Int, text: String) {
+        try {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+
+            val pi = PendingIntent.getActivity(
+                this, pct,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            val builder = NotificationCompat.Builder(this, "speakcharger_alert")
+                .setContentTitle("SpeakCharger - Baterai $pct%")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+
+            if (Build.VERSION.SDK_INT < 26) {
+                val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                builder.setSound(alarmUri)
+            }
+
+            nm.notify(1000 + pct, builder.build())
+        } catch (_: Exception) {}
     }
 
     private fun refreshNotification() {
@@ -215,14 +332,12 @@ class BatteryService : Service() {
     }
 
     private fun buildNotification(text: String): Notification {
-        val channelId = "speakcharger_ch"
-        if (Build.VERSION.SDK_INT >= 26) {
+        val channelId = if (Build.VERSION.SDK_INT >= 26) "speakcharger_monitor" else "speakcharger_ch"
+
+        if (Build.VERSION.SDK_INT < 26) {
             val ch = NotificationChannel(
-                channelId,
-                "SpeakCharger Monitor",
-                NotificationManager.IMPORTANCE_LOW
+                "speakcharger_ch", "SpeakCharger", NotificationManager.IMPORTANCE_LOW
             )
-            ch.description = "Notifikasi monitoring baterai"
             (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
                 .createNotificationChannel(ch)
         }
@@ -249,13 +364,8 @@ class BatteryService : Service() {
         } catch (_: Exception) {}
     }
 
-    // ★★★ KUNCI: setAlarmClock — alarm paling kuat di Android ★★★
-    private fun scheduleAlarmClock() {
+    private fun scheduleAlarm() {
         try {
-            val now = System.currentTimeMillis()
-            val triggerAt = now + ALARM_INTERVAL_MS
-
-            // Intent yang dijalankan saat alarm fire
             val alarmIntent = Intent(this, BatteryService::class.java).apply {
                 action = "SPEAKCHARGER_ALARM_CHECK"
             }
@@ -263,15 +373,12 @@ class BatteryService : Service() {
                 this, 100, alarmIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-
-            // Intent yang dibuka kalau user tap ikon alarm
             val showIntent = PendingIntent.getActivity(
                 this, 101,
                 Intent(this, MainActivity::class.java),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
-
-            // ★ setAlarmClock: alarm level TERTINGGI, gak bisa dibunuh OS
+            val triggerAt = System.currentTimeMillis() + ALARM_INTERVAL_MS
             alarmManager.setAlarmClock(
                 AlarmManager.AlarmClockInfo(triggerAt, showIntent),
                 operation
@@ -293,15 +400,12 @@ class BatteryService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Cek baterai SEKARANG
         checkBatteryNow()
-        // Jadwal alarm berikutnya (60 detik)
-        scheduleAlarmClock()
+        scheduleAlarm()
         return START_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Kalau di-swipe dari recent → restart
         try {
             val restartService = Intent(applicationContext, this.javaClass)
             restartService.setPackage(packageName)
@@ -324,7 +428,8 @@ class BatteryService : Service() {
         super.onDestroy()
         try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
         cancelAlarm()
-        cancelAll()
+        handler.removeCallbacksAndMessages(null)
+        try { tts.stop() } catch (_: Exception) {}
         tts.shutdown()
         toneGen.release()
     }
