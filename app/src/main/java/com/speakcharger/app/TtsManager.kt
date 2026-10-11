@@ -1,6 +1,7 @@
 package com.speakcharger.app
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.speech.tts.TextToSpeech
 import java.util.Locale
 
@@ -21,6 +22,16 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 result == TextToSpeech.LANG_NOT_SUPPORTED) {
                 tts?.setLanguage(Locale.US)
             }
+
+            // Kunci utama: paksa TTS pakai volume ALARM
+            try {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                tts?.setAudioAttributes(attrs)
+            } catch (_: Exception) {}
+
             tts?.setSpeechRate(0.9f)
             tts?.setPitch(1.0f)
             isReady = true
@@ -37,7 +48,10 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private fun speakInternal(text: String) {
         try {
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "u_${System.currentTimeMillis()}")
+            // Bundle dengan stream ALARM biar lebih kuat lagi
+            val params = android.os.Bundle()
+            params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_ALARM)
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "u_${System.currentTimeMillis()}")
         } catch (_: Exception) {}
     }
 
