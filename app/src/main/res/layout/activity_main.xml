@@ -39,7 +39,7 @@
 
         <Button
             android:id="@+id/btnPermissions"
-            android:text="🔑 Buka Pengaturan Izin"
+            android:text="Buka Pengaturan Izin"
             android:textSize="14sp"
             android:backgroundTint="#FF9800"
             android:textColor="#FFFFFF"
