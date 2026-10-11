@@ -29,6 +29,7 @@ class BatteryService : Service() {
     private lateinit var toneGen: ToneGenerator
     private lateinit var alarmManager: AlarmManager
     private lateinit var alarmIntent: PendingIntent
+    private lateinit var alarmShowIntent: PendingIntent
 
     private var lastSpokenLevel = -1
     private var firstFire = true
@@ -43,7 +44,6 @@ class BatteryService : Service() {
     private val FULL_REPEAT_INTERVAL = 3500L
     private val ALARM_INTERVAL_MS = 60000L
 
-    // ==== Receiver untuk perubahan baterai (realtime) ====
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_BATTERY_CHANGED) return
@@ -51,7 +51,6 @@ class BatteryService : Service() {
         }
     }
 
-    // ==== Heartbeat: update notifikasi tiap 30 detik ====
     private val heartbeatRunnable = object : Runnable {
         override fun run() {
             refreshNotification()
@@ -68,14 +67,11 @@ class BatteryService : Service() {
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         startForeground(1, buildNotification("Memulai..."))
 
-        // Cek baterai awal langsung
         checkBatteryNow()
-
-        // Mulai heartbeat
+        scheduleAlarmClock()
         handler.postDelayed(heartbeatRunnable, 30000)
     }
 
-    // ==== Baca baterai saat ini juga (tanpa tunggu broadcast) ====
     private fun checkBatteryNow() {
         try {
             val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -83,7 +79,6 @@ class BatteryService : Service() {
         } catch (_: Exception) {}
     }
 
-    // ==== Handle perubahan baterai ====
     private fun handleBattery(intent: Intent) {
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
@@ -134,7 +129,6 @@ class BatteryService : Service() {
         return n
     }
 
-    // ==== Alert logic ====
     private fun startAlert(pct: Int) {
         cancelAll()
         alertGeneration++
@@ -207,13 +201,12 @@ class BatteryService : Service() {
 
     private fun cancelAll() {
         alertGeneration++
-        val backupHeartbeat = heartbeatRunnable
+        val keepHeart = heartbeatRunnable
         handler.removeCallbacksAndMessages(null)
         try { tts.stop() } catch (_: Exception) {}
-        handler.postDelayed(backupHeartbeat, 30000)
+        handler.postDelayed(keepHeart, 30000)
     }
 
-    // ==== Notifikasi + timestamp heartbeat ====
     private fun refreshNotification() {
         val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         val pctStr = if (currentPct >= 0) "$currentPct%" else "--"
@@ -256,50 +249,59 @@ class BatteryService : Service() {
         } catch (_: Exception) {}
     }
 
-    // ==== Setup AlarmManager sebagai backup ====
-    private fun scheduleAlarm() {
+    // ★★★ KUNCI: setAlarmClock — alarm paling kuat di Android ★★★
+    private fun scheduleAlarmClock() {
         try {
-            val intent = Intent(this, BatteryService::class.java).apply {
+            val now = System.currentTimeMillis()
+            val triggerAt = now + ALARM_INTERVAL_MS
+
+            // Intent yang dijalankan saat alarm fire
+            val alarmIntent = Intent(this, BatteryService::class.java).apply {
                 action = "SPEAKCHARGER_ALARM_CHECK"
             }
-            alarmIntent = PendingIntent.getService(
-                this, 100, intent,
+            val operation = PendingIntent.getService(
+                this, 100, alarmIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            val triggerAt = SystemClock.elapsedRealtime() + ALARM_INTERVAL_MS
+            // Intent yang dibuka kalau user tap ikon alarm
+            val showIntent = PendingIntent.getActivity(
+                this, 101,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
 
-            if (Build.VERSION.SDK_INT >= 23) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, alarmIntent
-                )
-            } else {
-                alarmManager.setExact(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, alarmIntent
-                )
-            }
+            // ★ setAlarmClock: alarm level TERTINGGI, gak bisa dibunuh OS
+            alarmManager.setAlarmClock(
+                AlarmManager.AlarmClockInfo(triggerAt, showIntent),
+                operation
+            )
         } catch (_: Exception) {}
     }
 
     private fun cancelAlarm() {
         try {
-            if (::alarmIntent.isInitialized) {
-                alarmManager.cancel(alarmIntent)
+            val alarmIntent = Intent(this, BatteryService::class.java).apply {
+                action = "SPEAKCHARGER_ALARM_CHECK"
             }
+            val pi = PendingIntent.getService(
+                this, 100, alarmIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            alarmManager.cancel(pi)
         } catch (_: Exception) {}
     }
 
-    // ==== onStartCommand dipanggil tiap alarm fire ====
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Cek baterai langsung
+        // Cek baterai SEKARANG
         checkBatteryNow()
-        // Jadwal alarm berikutnya
-        scheduleAlarm()
+        // Jadwal alarm berikutnya (60 detik)
+        scheduleAlarmClock()
         return START_STICKY
     }
 
-    // ==== Swipe dari recent → restart ====
     override fun onTaskRemoved(rootIntent: Intent?) {
+        // Kalau di-swipe dari recent → restart
         try {
             val restartService = Intent(applicationContext, this.javaClass)
             restartService.setPackage(packageName)
