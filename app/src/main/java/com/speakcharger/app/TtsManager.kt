@@ -1,4 +1,3 @@
-=== MULAI ===
 package com.speakcharger.app
 
 import android.content.Context
@@ -189,4 +188,3 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
         isReady = false
     }
 }
-=== SELESAI ===
