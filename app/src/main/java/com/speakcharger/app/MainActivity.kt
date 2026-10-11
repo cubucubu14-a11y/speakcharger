@@ -1,6 +1,8 @@
+=== MULAI ===
 package com.speakcharger.app
 
 import android.Manifest
+import android.app.AlarmManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -24,9 +26,11 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var tvBattery: TextView
     private lateinit var tvStatus: TextView
+    private lateinit var tvPrepare: TextView
     private lateinit var btnToggle: Button
     private lateinit var btnTest: Button
     private lateinit var btnPermissions: Button
+    private lateinit var btnSettings: Button
     private lateinit var ttsManager: TtsManager
     private var isServiceRunning = false
 
@@ -43,7 +47,6 @@ class MainActivity : AppCompatActivity() {
                                  plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS ||
                                  status == BatteryManager.BATTERY_STATUS_CHARGING ||
                                  status == BatteryManager.BATTERY_STATUS_FULL
-
                 tvBattery.text = "Baterai: $pct%\n" +
                     if (isCharging) "Status: Sedang charging" else "Status: Tidak charging"
             }
@@ -56,18 +59,30 @@ class MainActivity : AppCompatActivity() {
 
         tvBattery = findViewById(R.id.tvBattery)
         tvStatus = findViewById(R.id.tvStatus)
+        tvPrepare = findViewById(R.id.tvPrepare)
         btnToggle = findViewById(R.id.btnToggle)
         btnTest = findViewById(R.id.btnTest)
         btnPermissions = findViewById(R.id.btnPermissions)
+        btnSettings = findViewById(R.id.btnSettings)
 
         ttsManager = TtsManager(this)
 
-        // Minta POST_NOTIFICATIONS
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(
                 this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100)
+        }
+
+        tvPrepare.text = "Menyiapkan file suara..."
+        tvPrepare.visibility = android.view.View.VISIBLE
+        ttsManager.renderAllToCache {
+            tvPrepare.text = "Suara siap"
+            tvPrepare.postDelayed({ tvPrepare.visibility = android.view.View.GONE }, 2000)
+        }
+
+        btnSettings.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
         }
 
         btnToggle.setOnClickListener {
@@ -88,20 +103,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnTest.setOnClickListener {
-            ttsManager.speak("Tes suara. Baterai lima puluh persen. Baterai full, cabut kabel.")
             Toast.makeText(this, "Memutar tes suara...", Toast.LENGTH_SHORT).show()
+            ttsManager.playFor(50) {
+                android.os.Handler(mainLooper).postDelayed({
+                    ttsManager.playFor(100) {}
+                }, 1500)
+            }
         }
 
-        btnPermissions.setOnClickListener {
-            openPermissionSettings()
-        }
+        btnPermissions.setOnClickListener { openPermissionSettings() }
 
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
     }
 
-    // Buka pengaturan supaya user kasih izin battery optimization & alarm
     private fun openPermissionSettings() {
-        // 1. Minta ignore battery optimization
         try {
             if (Build.VERSION.SDK_INT >= 23) {
                 val pm = getSystemService(POWER_SERVICE) as PowerManager
@@ -113,10 +128,9 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (_: Exception) {}
 
-        // 2. Minta izin exact alarm (Android 12+)
         try {
             if (Build.VERSION.SDK_INT >= 31) {
-                val am = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+                val am = getSystemService(ALARM_SERVICE) as AlarmManager
                 if (!am.canScheduleExactAlarms()) {
                     val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
                     intent.data = Uri.parse("package:$packageName")
@@ -125,9 +139,7 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (_: Exception) {}
 
-        Toast.makeText(this,
-            "Aktifkan izin yang muncul. Kalau sudah, balik ke app & tekan AKTIFKAN.",
-            Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "Izinkan semua. Balik ke app & tekan AKTIFKAN.", Toast.LENGTH_LONG).show()
     }
 
     private fun updateButtonUI() {
@@ -146,3 +158,4 @@ class MainActivity : AppCompatActivity() {
         ttsManager.shutdown()
     }
 }
+=== SELESAI ===
