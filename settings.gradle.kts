@@ -1,4 +1,3 @@
-```kotlin
 pluginManagement {
     repositories {
         google()
