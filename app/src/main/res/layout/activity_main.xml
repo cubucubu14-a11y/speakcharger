@@ -1,3 +1,4 @@
+=== MULAI ===
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -23,7 +24,17 @@
             android:text="Bunyi otomatis tiap 5% saat charging"
             android:textSize="13sp"
             android:alpha="0.7"
-            android:layout_marginBottom="28dp"
+            android:layout_marginBottom="12dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"/>
+
+        <TextView
+            android:id="@+id/tvPrepare"
+            android:text=""
+            android:textSize="12sp"
+            android:textColor="#4CAF50"
+            android:visibility="gone"
+            android:layout_marginBottom="16dp"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
 
@@ -33,9 +44,19 @@
             android:textSize="18sp"
             android:gravity="center"
             android:lineSpacingExtra="6dp"
-            android:layout_marginBottom="28dp"
+            android:layout_marginBottom="20dp"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
+
+        <Button
+            android:id="@+id/btnSettings"
+            android:text="Pengaturan Suara (Import MP3)"
+            android:textSize="14sp"
+            android:backgroundTint="#9C27B0"
+            android:textColor="#FFFFFF"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginBottom="10dp"/>
 
         <Button
             android:id="@+id/btnPermissions"
@@ -59,7 +80,7 @@
 
         <Button
             android:id="@+id/btnTest"
-            android:text="Test Suara TTS"
+            android:text="Test Suara"
             android:textSize="14sp"
             android:layout_width="match_parent"
             android:layout_height="48dp"
@@ -74,13 +95,6 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
 
-        <TextView
-            android:text="Cara pakai:&#10;&#10;1. Tekan Buka Pengaturan Izin (kasih semua izin)&#10;2. Tekan AKTIFKAN&#10;3. Colok charger&#10;4. HP bunyi tiap 5%&#10;5. Di 100% bunyi terus sampai cabut"
-            android:textSize="13sp"
-            android:lineSpacingExtra="4dp"
-            android:padding="16dp"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"/>
-
     </LinearLayout>
 </ScrollView>
+=== SELESAI ===
