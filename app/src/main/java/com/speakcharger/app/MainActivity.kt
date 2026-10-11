@@ -1,4 +1,3 @@
-=== MULAI ===
 package com.speakcharger.app
 
 import android.Manifest
@@ -158,4 +157,3 @@ class MainActivity : AppCompatActivity() {
         ttsManager.shutdown()
     }
 }
-=== SELESAI ===
