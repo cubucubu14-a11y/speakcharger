@@ -1,4 +1,3 @@
-=== MULAI ===
 package com.speakcharger.app
 
 import android.app.Activity
@@ -105,4 +104,3 @@ class SettingsActivity : AppCompatActivity() {
         try { ttsManager.stop() } catch (_: Exception) {}
     }
 }
-=== SELESAI ===
