@@ -14,6 +14,3 @@ dependencyResolutionManagement {
 }
 rootProject.name = "SpeakCharger"
 include(":app")
-```
-
----
