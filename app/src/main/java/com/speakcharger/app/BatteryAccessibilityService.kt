@@ -9,15 +9,17 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
-import android.media.ToneGenerator
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.speech.tts.TextToSpeech
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.app.NotificationCompat
 import java.io.File
@@ -27,9 +29,12 @@ import java.util.Locale
 
 class BatteryAccessibilityService : AccessibilityService() {
 
-    private lateinit var toneGen: ToneGenerator
     private val handler = Handler(Looper.getMainLooper())
     private var mediaPlayer: MediaPlayer? = null
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var audioManager: AudioManager? = null
+    private var focusRequest: AudioFocusRequest? = null
 
     private var lastLevel = -1
     private var firstFire = true
@@ -48,9 +53,19 @@ class BatteryAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+
+        audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+
+        // Init TTS untuk fallback
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale("id", "ID")
+                ttsReady = true
+            }
+        }
+
         try { createChannel() } catch (_: Exception) {}
         try { updateNotification() } catch (_: Exception) {}
-        try { toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100) } catch (_: Exception) {}
 
         try {
             val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
@@ -70,7 +85,34 @@ class BatteryAccessibilityService : AccessibilityService() {
         super.onDestroy()
         try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
         try { mediaPlayer?.release() } catch (_: Exception) {}
-        try { toneGen.release() } catch (_: Exception) {}
+        try { tts?.shutdown() } catch (_: Exception) {}
+    }
+
+    // ★★★ KUNCI: Request audio focus sebelum play ★★★
+    private fun requestAudioFocus() {
+        try {
+            val am = audioManager ?: return
+            // Pakai STREAM_ACCESSIBILITY — stream khusus accessibility
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+
+            if (Build.VERSION.SDK_INT >= 26) {
+                focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(attrs)
+                    .setAcceptsDelayedFocusGain(true)
+                    .build()
+                am.requestAudioFocus(focusRequest!!)
+            } else {
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                )
+            }
+        } catch (_: Exception) {}
     }
 
     private fun handleBattery(intent: Intent) {
@@ -119,45 +161,21 @@ class BatteryAccessibilityService : AccessibilityService() {
         return n
     }
 
-    // ==== ALERT ====
     private fun fireAlert(pct: Int) {
-        // 1. GETAR — bukti trigger fired
+        // Vibrate sebagai bukti trigger fired
         try {
             val v = getSystemService(VIBRATOR_SERVICE) as Vibrator
             if (Build.VERSION.SDK_INT >= 26) {
-                v.vibrate(VibrationEffect.createOneShot(1000, VibrationEffect.DEFAULT_AMPLITUDE))
+                v.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE))
             } else {
                 @Suppress("DEPRECATION")
-                v.vibrate(1000)
+                v.vibrate(500)
             }
         } catch (_: Exception) {}
 
-        // 2. NOTIF KHUSUS ALERT — bukti trigger fired
-        try {
-            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            val pi = PendingIntent.getActivity(
-                this, 999,
-                Intent(this, MainActivity::class.java),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-            val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            val notif = NotificationCompat.Builder(this, "speakcharger_monitor")
-                .setContentTitle("ALERT: Baterai $pct%")
-                .setContentText("Trigger fired • $timeStr")
-                .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
-                .setContentIntent(pi)
-                .build()
-            nm.notify(500 + pct, notif)
-        } catch (_: Exception) {}
-
-        // 3. PLAY SOUND — langsung pakai MediaPlayer (bukan TtsManager)
         generation++
         val gen = generation
-        if (pct == 100) {
-            playLoop(gen)
-        } else {
-            play3x(gen, pct, 0)
-        }
+        if (pct == 100) playLoop(gen) else play3x(gen, pct, 0)
     }
 
     private fun play3x(gen: Int, pct: Int, iter: Int) {
@@ -182,26 +200,19 @@ class BatteryAccessibilityService : AccessibilityService() {
     }
 
     private fun playOnce(pct: Int, onDone: () -> Unit) {
-        // Beep dulu
-        try { toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 300) } catch (_: Exception) {}
+        // ★ Request audio focus DULU
+        requestAudioFocus()
 
-        // Cari MP3 custom dari folder app
         val file = findMp3(pct)
-        if (file == null) {
-            handler.postDelayed({ onDone() }, 1500)
-            return
-        }
-
-        handler.postDelayed({
+        if (file != null) {
             try {
                 mediaPlayer?.release()
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
                 mediaPlayer = MediaPlayer().apply {
-                    setAudioAttributes(
-                        android.media.AudioAttributes.Builder()
-                            .setUsage(android.media.AudioAttributes.USAGE_ALARM)
-                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
+                    setAudioAttributes(attrs)
                     setDataSource(file.absolutePath)
                     setOnCompletionListener { onDone() }
                     setOnErrorListener { _, _, _ -> onDone(); true }
@@ -209,7 +220,42 @@ class BatteryAccessibilityService : AccessibilityService() {
                     start()
                 }
             } catch (_: Exception) { onDone() }
-        }, 400)
+        } else {
+            // Fallback: TTS dengan USAGE_ASSISTANCE_ACCESSIBILITY
+            if (ttsReady) {
+                try {
+                    val text = textForPct(pct)
+                    val params = android.os.Bundle()
+                    params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
+                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "u_$pct")
+                } catch (_: Exception) {}
+            }
+            handler.postDelayed({ onDone() }, 2000)
+        }
+    }
+
+    private fun textForPct(pct: Int): String = when (pct) {
+        5 -> "Baterai lima persen"
+        10 -> "Baterai sepuluh persen"
+        15 -> "Baterai lima belas persen"
+        20 -> "Baterai dua puluh persen"
+        25 -> "Baterai dua puluh lima persen"
+        30 -> "Baterai tiga puluh persen"
+        35 -> "Baterai tiga puluh lima persen"
+        40 -> "Baterai empat puluh persen"
+        45 -> "Baterai empat puluh lima persen"
+        50 -> "Baterai lima puluh persen"
+        55 -> "Baterai lima puluh lima persen"
+        60 -> "Baterai enam puluh persen"
+        65 -> "Baterai enam puluh lima persen"
+        70 -> "Baterai tujuh puluh persen"
+        75 -> "Baterai tujuh puluh lima persen"
+        80 -> "Baterai delapan puluh persen"
+        85 -> "Baterai delapan puluh lima persen"
+        90 -> "Baterai sembilan puluh persen"
+        95 -> "Baterai sembilan puluh lima persen"
+        100 -> "Baterai full, cabut kabel"
+        else -> "Baterai $pct persen"
     }
 
     private fun findMp3(pct: Int): File? {
@@ -222,7 +268,6 @@ class BatteryAccessibilityService : AccessibilityService() {
         return null
     }
 
-    // ==== NOTIFIKASI MONITOR ====
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
