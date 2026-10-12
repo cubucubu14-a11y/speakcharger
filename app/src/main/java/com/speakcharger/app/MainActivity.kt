@@ -1,37 +1,29 @@
 package com.speakcharger.app
 
-import android.Manifest
-import android.app.AlarmManager
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
-import android.content.res.ColorStateList
-import android.net.Uri
 import android.os.BatteryManager
-import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
 import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var tvBattery: TextView
     private lateinit var tvStatus: TextView
     private lateinit var tvPrepare: TextView
-    private lateinit var btnToggle: Button
-    private lateinit var btnTest: Button
-    private lateinit var btnPermissions: Button
+    private lateinit var tvAccessStatus: TextView
+    private lateinit var btnAccessibility: Button
     private lateinit var btnSettings: Button
+    private lateinit var btnTest: Button
     private lateinit var ttsManager: TtsManager
-    private var isServiceRunning = false
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -59,19 +51,12 @@ class MainActivity : AppCompatActivity() {
         tvBattery = findViewById(R.id.tvBattery)
         tvStatus = findViewById(R.id.tvStatus)
         tvPrepare = findViewById(R.id.tvPrepare)
-        btnToggle = findViewById(R.id.btnToggle)
-        btnTest = findViewById(R.id.btnTest)
-        btnPermissions = findViewById(R.id.btnPermissions)
+        tvAccessStatus = findViewById(R.id.tvAccessStatus)
+        btnAccessibility = findViewById(R.id.btnAccessibility)
         btnSettings = findViewById(R.id.btnSettings)
+        btnTest = findViewById(R.id.btnTest)
 
         ttsManager = TtsManager(this)
-
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100)
-        }
 
         tvPrepare.text = "Menyiapkan file suara..."
         tvPrepare.visibility = android.view.View.VISIBLE
@@ -80,25 +65,17 @@ class MainActivity : AppCompatActivity() {
             tvPrepare.postDelayed({ tvPrepare.visibility = android.view.View.GONE }, 2000)
         }
 
-        btnSettings.setOnClickListener {
-            startActivity(Intent(this, SettingsActivity::class.java))
+        btnAccessibility.setOnClickListener {
+            try {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                Toast.makeText(this, "Cari 'SpeakCharger' dan aktifkan", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+                Toast.makeText(this, "Gak bisa buka Settings", Toast.LENGTH_SHORT).show()
+            }
         }
 
-        btnToggle.setOnClickListener {
-            if (isServiceRunning) {
-                stopService(Intent(this, BatteryService::class.java))
-                isServiceRunning = false
-                updateButtonUI()
-                tvStatus.text = "Service tidak aktif"
-            } else {
-                val intent = Intent(this, BatteryService::class.java)
-                if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent)
-                else startService(intent)
-                isServiceRunning = true
-                updateButtonUI()
-                tvStatus.text = "Aktif - silakan colok charger"
-                Toast.makeText(this, "Aktif! Sekarang colok charger.", Toast.LENGTH_LONG).show()
-            }
+        btnSettings.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
         }
 
         btnTest.setOnClickListener {
@@ -110,45 +87,46 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        btnPermissions.setOnClickListener { openPermissionSettings() }
-
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        updateAccessStatus()
     }
 
-    private fun openPermissionSettings() {
-        try {
-            if (Build.VERSION.SDK_INT >= 23) {
-                val pm = getSystemService(POWER_SERVICE) as PowerManager
-                if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                    intent.data = Uri.parse("package:$packageName")
-                    startActivity(intent)
-                }
-            }
-        } catch (_: Exception) {}
-
-        try {
-            if (Build.VERSION.SDK_INT >= 31) {
-                val am = getSystemService(ALARM_SERVICE) as AlarmManager
-                if (!am.canScheduleExactAlarms()) {
-                    val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
-                    intent.data = Uri.parse("package:$packageName")
-                    startActivity(intent)
-                }
-            }
-        } catch (_: Exception) {}
-
-        Toast.makeText(this, "Izinkan semua. Balik ke app & tekan AKTIFKAN.", Toast.LENGTH_LONG).show()
-    }
-
-    private fun updateButtonUI() {
-        if (isServiceRunning) {
-            btnToggle.text = "MATIKAN"
-            btnToggle.backgroundTintList = ColorStateList.valueOf(0xFFF44336.toInt())
+    private fun updateAccessStatus() {
+        if (isAccessibilityServiceEnabled()) {
+            tvAccessStatus.text = "Aksesibilitas: AKTIF"
+            tvAccessStatus.setTextColor(0xFF4CAF50.toInt())
+            btnAccessibility.text = "AKSESIBILITAS AKTIF"
+            btnAccessibility.isEnabled = false
+            tvStatus.text = "Siap! Colok charger, suara otomatis bunyi tiap 5% walau layar mati."
         } else {
-            btnToggle.text = "AKTIFKAN"
-            btnToggle.backgroundTintList = ColorStateList.valueOf(0xFF4CAF50.toInt())
+            tvAccessStatus.text = "Aksesibilitas: BELUM AKTIF"
+            tvAccessStatus.setTextColor(0xFFF44336.toInt())
+            btnAccessibility.text = "1. AKTIFKAN AKSESIBILITAS"
+            btnAccessibility.isEnabled = true
+            tvStatus.text = "Tekan tombol merah muda di atas, cari SpeakCharger, aktifkan."
         }
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        return try {
+            val am = getSystemService(ACCESSIBILITY_SERVICE) as AccessibilityManager
+            val enabled = am.getEnabledAccessibilityServiceList(
+                AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+            )
+            for (svc in enabled) {
+                val info = svc.resolveInfo.serviceInfo
+                if (info.packageName == packageName &&
+                    info.name == BatteryAccessibilityService::class.java.name) {
+                    return true
+                }
+            }
+            false
+        } catch (_: Exception) { false }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateAccessStatus()
     }
 
     override fun onDestroy() {
