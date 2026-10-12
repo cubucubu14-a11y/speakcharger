@@ -10,8 +10,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioAttributes
-import android.media.AudioManager
-import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.os.BatteryManager
 import android.os.Build
@@ -19,11 +17,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
-import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.app.NotificationCompat
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -41,13 +37,8 @@ class BatteryAccessibilityService : AccessibilityService() {
     private var fullAlarmActive = false
     private var fullAlarmRunnable: Runnable? = null
 
-    private var mediaPlayer: MediaPlayer? = null
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
-
     private val CH_MONITOR = "speakcharger_monitor_v5"
     private val CH_ALERT = "speakcharger_alert_v5"
-
     private val NOTIF_MONITOR = 1
     private val NOTIF_ALERT_BASE = 100
 
@@ -61,20 +52,9 @@ class BatteryAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
 
-        try { createChannels() } catch (e: Exception) { Log.e("SpeakCharger", "Channel error", e) }
-
-        try {
-            tts = TextToSpeech(this) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    try { tts?.language = Locale("id", "ID") }
-                    catch (_: Exception) {
-                        try { tts?.language = Locale.US } catch (_: Exception) {}
-                    }
-                    ttsReady = true
-                    Log.d("SpeakCharger", "TTS ready")
-                }
-            }
-        } catch (_: Exception) {}
+        try { createChannels() } catch (e: Exception) {
+            Log.e("SpeakCharger", "Channel error", e)
+        }
 
         try {
             val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
@@ -108,8 +88,6 @@ class BatteryAccessibilityService : AccessibilityService() {
             try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
             isReceiverRegistered = false
         }
-        try { mediaPlayer?.release() } catch (_: Exception) {}
-        try { tts?.shutdown() } catch (_: Exception) {}
         try {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             nm.cancel(NOTIF_MONITOR)
@@ -184,7 +162,7 @@ class BatteryAccessibilityService : AccessibilityService() {
             }
         } catch (e: Exception) { Log.e("SpeakCharger", "Vibrate error", e) }
 
-        // 2. Notifikasi dengan suara
+        // 2. Notif alert
         try {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val pi = PendingIntent.getActivity(
@@ -209,72 +187,20 @@ class BatteryAccessibilityService : AccessibilityService() {
             Log.d("SpeakCharger", "Alert fired: $pct%")
         } catch (e: Exception) { Log.e("SpeakCharger", "Alert error", e) }
 
-        // 3. Audio langsung (MP3 / TTS)
-        playDirectSound(pct)
-    }
-
-    private fun playDirectSound(pct: Int) {
-        val mp3 = findMp3(pct)
-        if (mp3 != null) {
-            try {
-                mediaPlayer?.release()
-                val attrs = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-                mediaPlayer = MediaPlayer().apply {
-                    setAudioAttributes(attrs)
-                    setDataSource(mp3.absolutePath)
-                    prepare()
-                    start()
-                }
-                Log.d("SpeakCharger", "MP3 played: $pct")
-                return
-            } catch (e: Exception) { Log.e("SpeakCharger", "MP3 error", e) }
+        // 3. ★ Kirim ke AudioPlayerService (foreground mediaPlayback) ★
+        try {
+            val intent = Intent(this, AudioPlayerService::class.java).apply {
+                putExtra("pct", pct)
+            }
+            if (Build.VERSION.SDK_INT >= 26) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Log.d("SpeakCharger", "AudioPlayerService started: $pct")
+        } catch (e: Exception) {
+            Log.e("SpeakCharger", "Start audio service error", e)
         }
-
-        if (ttsReady) {
-            try {
-                val params = android.os.Bundle()
-                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
-                tts?.speak(textForPct(pct), TextToSpeech.QUEUE_FLUSH, params, "a_$pct")
-                Log.d("SpeakCharger", "TTS speak: $pct")
-            } catch (e: Exception) { Log.e("SpeakCharger", "TTS error", e) }
-        }
-    }
-
-    private fun findMp3(pct: Int): File? {
-        val dir = File(filesDir, "custom_sounds")
-        val exts = listOf("mp3", "wav", "m4a", "ogg", "aac", "3gp")
-        for (ext in exts) {
-            val f = File(dir, "$pct.$ext")
-            if (f.exists() && f.length() > 0) return f
-        }
-        return null
-    }
-
-    private fun textForPct(pct: Int): String = when (pct) {
-        5 -> "Baterai lima persen"
-        10 -> "Baterai sepuluh persen"
-        15 -> "Baterai lima belas persen"
-        20 -> "Baterai dua puluh persen"
-        25 -> "Baterai dua puluh lima persen"
-        30 -> "Baterai tiga puluh persen"
-        35 -> "Baterai tiga puluh lima persen"
-        40 -> "Baterai empat puluh persen"
-        45 -> "Baterai empat puluh lima persen"
-        50 -> "Baterai lima puluh persen"
-        55 -> "Baterai lima puluh lima persen"
-        60 -> "Baterai enam puluh persen"
-        65 -> "Baterai enam puluh lima persen"
-        70 -> "Baterai tujuh puluh persen"
-        75 -> "Baterai tujuh puluh lima persen"
-        80 -> "Baterai delapan puluh persen"
-        85 -> "Baterai delapan puluh lima persen"
-        90 -> "Baterai sembilan puluh persen"
-        95 -> "Baterai sembilan puluh lima persen"
-        100 -> "Baterai full, cabut kabel"
-        else -> "Baterai $pct persen"
     }
 
     private fun startFullAlarm() {
