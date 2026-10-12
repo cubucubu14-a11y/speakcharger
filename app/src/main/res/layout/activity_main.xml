@@ -1,100 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:gravity="center">
 
-    <LinearLayout
+    <TextView
+        android:text="SpeakCharger"
+        android:textSize="32sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="32dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+
+    <TextView
+        android:id="@+id/tvAccessStatus"
+        android:text="BELUM AKTIF"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="#F44336"
+        android:layout_marginBottom="8dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+
+    <TextView
+        android:id="@+id/tvBattery"
+        android:text="--"
+        android:textSize="14sp"
+        android:textColor="#666666"
+        android:layout_marginBottom="40dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"/>
+
+    <Button
+        android:id="@+id/btnAccessibility"
+        android:text="Aktifkan"
+        android:textSize="16sp"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#E91E63"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="24dp"
-        android:gravity="center_horizontal">
+        android:layout_height="56dp"
+        android:layout_marginBottom="12dp"/>
 
-        <TextView
-            android:text="SpeakCharger"
-            android:textSize="28sp"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp"
-            android:layout_marginBottom="4dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"/>
+    <Button
+        android:id="@+id/btnSettings"
+        android:text="Suara MP3"
+        android:textSize="14sp"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#9C27B0"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginBottom="12dp"/>
 
-        <TextView
-            android:text="Bunyi otomatis tiap 5% saat charging"
-            android:textSize="13sp"
-            android:alpha="0.7"
-            android:layout_marginBottom="12dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"/>
+    <Button
+        android:id="@+id/btnTest"
+        android:text="Test"
+        android:textSize="14sp"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"/>
 
-        <TextView
-            android:id="@+id/tvAccessStatus"
-            android:text="Aksesibilitas: BELUM AKTIF"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:textColor="#F44336"
-            android:gravity="center"
-            android:layout_marginBottom="12dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"/>
-
-        <TextView
-            android:id="@+id/tvPrepare"
-            android:text=""
-            android:textSize="12sp"
-            android:textColor="#4CAF50"
-            android:visibility="gone"
-            android:layout_marginBottom="12dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"/>
-
-        <TextView
-            android:id="@+id/tvBattery"
-            android:text="Baterai: --"
-            android:textSize="18sp"
-            android:gravity="center"
-            android:lineSpacingExtra="6dp"
-            android:layout_marginBottom="20dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"/>
-
-        <Button
-            android:id="@+id/btnAccessibility"
-            android:text="1. AKTIFKAN AKSESIBILITAS"
-            android:textSize="14sp"
-            android:backgroundTint="#E91E63"
-            android:textColor="#FFFFFF"
-            android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_marginBottom="10dp"/>
-
-        <Button
-            android:id="@+id/btnSettings"
-            android:text="Pengaturan Suara (Import MP3)"
-            android:textSize="14sp"
-            android:backgroundTint="#9C27B0"
-            android:textColor="#FFFFFF"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginBottom="10dp"/>
-
-        <Button
-            android:id="@+id/btnTest"
-            android:text="Test Suara"
-            android:textSize="14sp"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginBottom="20dp"/>
-
-        <TextView
-            android:id="@+id/tvStatus"
-            android:text=""
-            android:textSize="13sp"
-            android:gravity="center"
-            android:lineSpacingExtra="3dp"
-            android:layout_marginBottom="24dp"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"/>
-
-    </LinearLayout>
-</ScrollView>
+</LinearLayout>
