@@ -9,8 +9,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
@@ -37,8 +35,8 @@ class BatteryAccessibilityService : AccessibilityService() {
     private var fullAlarmActive = false
     private var fullAlarmRunnable: Runnable? = null
 
-    private val CH_MONITOR = "speakcharger_monitor_v5"
-    private val CH_ALERT = "speakcharger_alert_v5"
+    private val CH_MONITOR = "speakcharger_monitor_v6"
+    private val CH_ALERT = "speakcharger_alert_v6"
     private val NOTIF_MONITOR = 1
     private val NOTIF_ALERT_BASE = 100
 
@@ -162,7 +160,7 @@ class BatteryAccessibilityService : AccessibilityService() {
             }
         } catch (e: Exception) { Log.e("SpeakCharger", "Vibrate error", e) }
 
-        // 2. Notif alert
+        // 2. Notif alert — SILENT (cuma visual, suara dari AudioPlayerService)
         try {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val pi = PendingIntent.getActivity(
@@ -187,7 +185,7 @@ class BatteryAccessibilityService : AccessibilityService() {
             Log.d("SpeakCharger", "Alert fired: $pct%")
         } catch (e: Exception) { Log.e("SpeakCharger", "Alert error", e) }
 
-        // 3. ★ Kirim ke AudioPlayerService (foreground mediaPlayback) ★
+        // 3. ★ Kirim ke AudioPlayerService (foreground mediaPlayback) — yang main suara
         try {
             val intent = Intent(this, AudioPlayerService::class.java).apply {
                 putExtra("pct", pct)
@@ -228,6 +226,7 @@ class BatteryAccessibilityService : AccessibilityService() {
         } catch (_: Exception) {}
     }
 
+    // ★ ALERT CHANNEL SILENT — biar gak dobel suara
     private fun createChannels() {
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -242,16 +241,8 @@ class BatteryAccessibilityService : AccessibilityService() {
             val alertChannel = NotificationChannel(
                 CH_ALERT, "Alert Baterai", NotificationManager.IMPORTANCE_HIGH
             )
-            val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            if (sound != null) {
-                val attributes = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-                alertChannel.setSound(sound, attributes)
-            }
-            alertChannel.enableVibration(true)
+            alertChannel.setSound(null, null)
+            alertChannel.enableVibration(false)
             alertChannel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC)
             nm.createNotificationChannel(alertChannel)
         }
