@@ -10,15 +10,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioAttributes
-import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.VibrationEffect
-import android.os.Vibrator
 import android.speech.tts.TextToSpeech
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.app.NotificationCompat
@@ -33,8 +31,6 @@ class BatteryAccessibilityService : AccessibilityService() {
     private var mediaPlayer: MediaPlayer? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var audioManager: AudioManager? = null
-    private var focusRequest: AudioFocusRequest? = null
 
     private var lastLevel = -1
     private var firstFire = true
@@ -43,6 +39,8 @@ class BatteryAccessibilityService : AccessibilityService() {
     private var generation = 0
 
     private val NOTIF_ID = 1
+    private val TEST_ID = 100
+    private val ALERT_ID_BASE = 200
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -54,9 +52,7 @@ class BatteryAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
 
-        audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-
-        // Init TTS untuk fallback
+        // Init TTS
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale("id", "ID")
@@ -64,13 +60,17 @@ class BatteryAccessibilityService : AccessibilityService() {
             }
         }
 
-        try { createChannel() } catch (_: Exception) {}
-        try { updateNotification() } catch (_: Exception) {}
+        try { createChannels() } catch (_: Exception) {}
+        try { updateMonitorNotification() } catch (_: Exception) {}
 
         try {
-            val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-            registerReceiver(batteryReceiver, filter)
+            registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         } catch (_: Exception) {}
+
+        // ★★★ TEST: Bunyi langsung saat connect ★★★
+        handler.postDelayed({
+            playTestSound()
+        }, 1500)
 
         try {
             val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -88,30 +88,39 @@ class BatteryAccessibilityService : AccessibilityService() {
         try { tts?.shutdown() } catch (_: Exception) {}
     }
 
-    // ★★★ KUNCI: Request audio focus sebelum play ★★★
-    private fun requestAudioFocus() {
+    // ★ TEST SOUND — cek audio bisa keluar atau enggak ★
+    private fun playTestSound() {
+        // 1. TTS dengan STREAM_ACCESSIBILITY
         try {
-            val am = audioManager ?: return
-            // Pakai STREAM_ACCESSIBILITY — stream khusus accessibility
-            val attrs = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build()
-
-            if (Build.VERSION.SDK_INT >= 26) {
-                focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                    .setAudioAttributes(attrs)
-                    .setAcceptsDelayedFocusGain(true)
-                    .build()
-                am.requestAudioFocus(focusRequest!!)
-            } else {
-                @Suppress("DEPRECATION")
-                am.requestAudioFocus(
-                    null,
-                    AudioManager.STREAM_MUSIC,
-                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+            if (ttsReady) {
+                val params = android.os.Bundle()
+                params.putInt(
+                    TextToSpeech.Engine.KEY_PARAM_STREAM,
+                    AudioManager.STREAM_ACCESSIBILITY
                 )
+                params.putInt(
+                    TextToSpeech.Engine.KEY_PARAM_VOLUME, 100
+                )
+                tts?.speak("Tes suara SpeakCharger", TextToSpeech.QUEUE_FLUSH, params, "test")
             }
+        } catch (_: Exception) {}
+
+        // 2. Notif dengan suara — sebagai backup
+        try {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            val pi = PendingIntent.getActivity(
+                this, 0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val notif = NotificationCompat.Builder(this, "speakcharger_test")
+                .setContentTitle("SpeakCharger Test")
+                .setContentText("Jika bunyi = audio OK")
+                .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(TEST_ID, notif)
         } catch (_: Exception) {}
     }
 
@@ -129,7 +138,7 @@ class BatteryAccessibilityService : AccessibilityService() {
 
         currentPct = pct
         isChargingNow = isCharging
-        updateNotification()
+        updateMonitorNotification()
 
         if (!isCharging) {
             lastLevel = pct
@@ -162,15 +171,25 @@ class BatteryAccessibilityService : AccessibilityService() {
     }
 
     private fun fireAlert(pct: Int) {
-        // Vibrate sebagai bukti trigger fired
+        // Kirim notif ALERT dengan suara (backup kalau TTS gak jalan)
         try {
-            val v = getSystemService(VIBRATOR_SERVICE) as Vibrator
-            if (Build.VERSION.SDK_INT >= 26) {
-                v.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                @Suppress("DEPRECATION")
-                v.vibrate(500)
-            }
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            val pi = PendingIntent.getActivity(
+                this, pct,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val text = if (pct == 100) "Baterai FULL! Cabut kabel!" else "Baterai $pct%"
+            val notif = NotificationCompat.Builder(this, "speakcharger_alert")
+                .setContentTitle("SpeakCharger - Baterai $pct%")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(ALERT_ID_BASE + pct, notif)
         } catch (_: Exception) {}
 
         generation++
@@ -200,9 +219,7 @@ class BatteryAccessibilityService : AccessibilityService() {
     }
 
     private fun playOnce(pct: Int, onDone: () -> Unit) {
-        // ★ Request audio focus DULU
-        requestAudioFocus()
-
+        // Coba MP3 dulu
         val file = findMp3(pct)
         if (file != null) {
             try {
@@ -219,19 +236,21 @@ class BatteryAccessibilityService : AccessibilityService() {
                     prepare()
                     start()
                 }
-            } catch (_: Exception) { onDone() }
-        } else {
-            // Fallback: TTS dengan USAGE_ASSISTANCE_ACCESSIBILITY
-            if (ttsReady) {
-                try {
-                    val text = textForPct(pct)
-                    val params = android.os.Bundle()
-                    params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
-                    tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "u_$pct")
-                } catch (_: Exception) {}
-            }
-            handler.postDelayed({ onDone() }, 2000)
+                return
+            } catch (_: Exception) {}
         }
+        // Fallback TTS via STREAM_ACCESSIBILITY
+        if (ttsReady) {
+            try {
+                val params = android.os.Bundle()
+                params.putInt(
+                    TextToSpeech.Engine.KEY_PARAM_STREAM,
+                    AudioManager.STREAM_ACCESSIBILITY
+                )
+                tts?.speak(textForPct(pct), TextToSpeech.QUEUE_FLUSH, params, "a_$pct")
+            } catch (_: Exception) {}
+        }
+        handler.postDelayed({ onDone() }, 2000)
     }
 
     private fun textForPct(pct: Int): String = when (pct) {
@@ -268,41 +287,53 @@ class BatteryAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun createChannel() {
+    private fun createChannels() {
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            val ch = NotificationChannel(
-                "speakcharger_monitor",
-                "Monitor Baterai",
-                NotificationManager.IMPORTANCE_LOW
+
+            // Monitor channel (silent)
+            val monCh = NotificationChannel(
+                "speakcharger_monitor", "Monitor", NotificationManager.IMPORTANCE_LOW
             )
-            ch.setSound(null, null)
-            ch.enableVibration(false)
-            nm.createNotificationChannel(ch)
+            monCh.setSound(null, null)
+            monCh.enableVibration(false)
+            nm.createNotificationChannel(monCh)
+
+            // Test channel (dengan suara)
+            val testCh = NotificationChannel(
+                "speakcharger_test", "Test", NotificationManager.IMPORTANCE_HIGH
+            )
+            val defaultSound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            testCh.setSound(defaultSound, AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build())
+            nm.createNotificationChannel(testCh)
+
+            // Alert channel (dengan suara)
+            val alertCh = NotificationChannel(
+                "speakcharger_alert", "Alert", NotificationManager.IMPORTANCE_HIGH
+            )
+            val alarmSound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            alertCh.setSound(alarmSound, AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build())
+            alertCh.enableVibration(false)
+            nm.createNotificationChannel(alertCh)
         }
     }
 
-    private fun buildNotification(): Notification {
-        val channelId = "speakcharger_monitor"
-        if (Build.VERSION.SDK_INT < 26) {
-            val ch = NotificationChannel(
-                channelId, "SpeakCharger", NotificationManager.IMPORTANCE_LOW
-            )
-            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-                .createNotificationChannel(ch)
-        }
-
+    private fun buildMonitorNotification(): Notification {
         val pi = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-
         val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         val pctStr = if (currentPct >= 0) "$currentPct%" else "--"
         val statusStr = if (isChargingNow) "charging" else "tidak charging"
-
-        return NotificationCompat.Builder(this, channelId)
+        return NotificationCompat.Builder(this, "speakcharger_monitor")
             .setContentTitle("SpeakCharger Aktif")
             .setContentText("Baterai $pctStr - $statusStr • $timeStr")
             .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
@@ -311,10 +342,10 @@ class BatteryAccessibilityService : AccessibilityService() {
             .build()
     }
 
-    private fun updateNotification() {
+    private fun updateMonitorNotification() {
         try {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            nm.notify(NOTIF_ID, buildNotification())
+            nm.notify(NOTIF_ID, buildMonitorNotification())
         } catch (_: Exception) {}
     }
 }
