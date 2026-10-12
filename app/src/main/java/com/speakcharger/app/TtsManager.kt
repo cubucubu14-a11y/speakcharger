@@ -3,7 +3,11 @@ package com.speakcharger.app
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import android.speech.tts.TextToSpeech
 import java.io.File
@@ -14,6 +18,9 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
     private var isReady = false
     private var mediaPlayer: MediaPlayer? = null
+    private var currentRingtone: Ringtone? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val cacheDir: File = File(context.cacheDir, "tts_files").apply {
         if (!exists()) mkdirs()
@@ -109,9 +116,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
 
     fun renderAllToCache(onDone: () -> Unit) {
         if (!isReady) {
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                renderAllToCache(onDone)
-            }, 500)
+            mainHandler.postDelayed({ renderAllToCache(onDone) }, 500)
             return
         }
         Thread {
@@ -124,7 +129,7 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
                     Thread.sleep(300)
                 } catch (_: Exception) {}
             }
-            android.os.Handler(android.os.Looper.getMainLooper()).post { onDone() }
+            mainHandler.post { onDone() }
         }.start()
     }
 
@@ -140,27 +145,51 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
             return
         }
         speakLive(pct)
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ onFinish() }, 2000)
+        mainHandler.postDelayed({ onFinish() }, 2000)
     }
 
+    // ★ KUNCI: Pakai Ringtone API (system-level) — works with screen off
     private fun playFile(file: File, onFinish: () -> Unit) {
         try {
-            mediaPlayer?.release()
-            mediaPlayer = MediaPlayer().apply {
-                val attrs = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-                setAudioAttributes(attrs)
-                setDataSource(file.absolutePath)
-                setOnCompletionListener { onFinish() }
-                setOnErrorListener { _, _, _ -> onFinish(); true }
-                prepare()
-                start()
+            try { currentRingtone?.stop() } catch (_: Exception) {}
+            currentRingtone = null
+
+            val uri = Uri.fromFile(file)
+            val ringtone = RingtoneManager.getRingtone(context, uri)
+
+            if (ringtone == null) {
+                onFinish()
+                return
             }
+
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            ringtone.audioAttributes = attrs
+
+            currentRingtone = ringtone
+
+            val duration = estimateDuration(file)
+            ringtone.play()
+
+            mainHandler.postDelayed({
+                try { ringtone.stop() } catch (_: Exception) {}
+                if (currentRingtone === ringtone) currentRingtone = null
+                onFinish()
+            }, duration)
+
         } catch (_: Exception) {
             onFinish()
         }
+    }
+
+    private fun estimateDuration(file: File): Long {
+        return try {
+            val sizeKb = file.length() / 1024
+            val seconds = sizeKb / 16
+            (seconds * 1000L).coerceIn(1500L, 10000L)
+        } catch (_: Exception) { 3000L }
     }
 
     private fun speakLive(pct: Int) {
@@ -176,6 +205,8 @@ class TtsManager(private val context: Context) : TextToSpeech.OnInitListener {
     }
 
     fun stop() {
+        try { currentRingtone?.stop() } catch (_: Exception) {}
+        currentRingtone = null
         try { mediaPlayer?.stop(); mediaPlayer?.release() } catch (_: Exception) {}
         mediaPlayer = null
         try { tts?.stop() } catch (_: Exception) {}
