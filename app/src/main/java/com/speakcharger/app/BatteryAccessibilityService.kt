@@ -17,137 +17,85 @@ import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.app.NotificationCompat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class BatteryAccessibilityService : AccessibilityService() {
 
     private lateinit var tts: TtsManager
     private lateinit var toneGen: ToneGenerator
+    private val handler = Handler(Looper.getMainLooper())
 
-    private var lastSpokenLevel = -1
+    private var lastLevel = -1
     private var firstFire = true
-    private var everCharged = false
     private var currentPct = -1
     private var isChargingNow = false
+    private var generation = 0
 
-    private val handler = Handler(Looper.getMainLooper())
-    private var alertGeneration = 0
-
-    private val POLL_INTERVAL = 15000L
-    private val HEARTBEAT_INTERVAL = 30000L
+    private val NOTIF_ID = 1
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_BATTERY_CHANGED) return
-            handleBattery(intent)
-        }
-    }
 
-    private val pollRunnable = object : Runnable {
-        override fun run() {
-            checkBatteryNow()
-            handler.postDelayed(this, POLL_INTERVAL)
-        }
-    }
+            val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+            val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+            if (level < 0 || scale <= 0) return
+            val pct = level * 100 / scale
 
-    private val heartbeatRunnable = object : Runnable {
-        override fun run() {
-            try { showNotification("Monitor aktif") } catch (_: Exception) {}
-            handler.postDelayed(this, HEARTBEAT_INTERVAL)
+            val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
+            val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+            val isCharging = plugged != 0 ||
+                             status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                             status == BatteryManager.BATTERY_STATUS_FULL
+
+            currentPct = pct
+            isChargingNow = isCharging
+            updateNotification()
+
+            if (!isCharging) {
+                lastLevel = pct
+                return
+            }
+
+            if (firstFire) {
+                firstFire = false
+                lastLevel = pct
+                return
+            }
+
+            if (pct == lastLevel) return
+
+            val crossed = findCrossedLevel(lastLevel, pct, 5)
+            if (crossed > 0) {
+                lastLevel = pct
+                trigger(crossed)
+            } else if (pct > lastLevel) {
+                lastLevel = pct
+            }
         }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-
-        // 1. Bikin notif channel dulu
-        try { createChannel() } catch (_: Exception) {}
-
-        // 2. Tampilkan notif langsung — biar ketahuan service hidup
-        try { showNotification("Service terhubung") } catch (_: Exception) {}
-
-        // 3. Init semua komponen
         try {
+            createChannel()
             tts = TtsManager(this)
             toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
-        } catch (_: Exception) {}
-
-        // 4. Daftar broadcast baterai
-        try {
             registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            updateNotification()
         } catch (_: Exception) {}
-
-        // 5. Cek baterai awal
-        try { checkBatteryNow() } catch (_: Exception) {}
-
-        // 6. Jadwal polling & heartbeat
-        handler.postDelayed(pollRunnable, POLL_INTERVAL)
-        handler.postDelayed(heartbeatRunnable, HEARTBEAT_INTERVAL)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
-
     override fun onInterrupt() {}
 
     override fun onDestroy() {
         super.onDestroy()
         try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
-        handler.removeCallbacksAndMessages(null)
-        try { stopAllPlayback() } catch (_: Exception) {}
         try { tts.shutdown() } catch (_: Exception) {}
         try { toneGen.release() } catch (_: Exception) {}
-    }
-
-    private fun checkBatteryNow() {
-        try {
-            val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
-            val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            if (pct < 0) return
-
-            val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            if (sticky == null) return
-
-            sticky.putExtra(BatteryManager.EXTRA_LEVEL, pct)
-            sticky.putExtra(BatteryManager.EXTRA_SCALE, 100)
-            handleBattery(sticky)
-        } catch (_: Exception) {}
-    }
-
-    private fun handleBattery(intent: Intent) {
-        val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-        val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-        if (level < 0 || scale <= 0) return
-        val pct = level * 100 / scale
-
-        val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
-        val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-        val isCharging = plugged == BatteryManager.BATTERY_PLUGGED_AC ||
-                         plugged == BatteryManager.BATTERY_PLUGGED_USB ||
-                         plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS ||
-                         status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                         status == BatteryManager.BATTERY_STATUS_FULL
-
-        currentPct = pct
-        isChargingNow = isCharging
-
-        if (firstFire) {
-            firstFire = false
-            lastSpokenLevel = pct
-            if (isCharging) everCharged = true
-            return
-        }
-
-        if (isCharging) {
-            everCharged = true
-            val crossed = findCrossedLevel(lastSpokenLevel, pct, 5)
-            if (crossed > 0) {
-                lastSpokenLevel = pct
-                startAlert(crossed)
-            } else if (pct > lastSpokenLevel) {
-                lastSpokenLevel = pct
-            }
-        } else {
-            if (everCharged) stopAllPlayback()
-        }
     }
 
     private fun findCrossedLevel(from: Int, to: Int, step: Int): Int {
@@ -158,54 +106,52 @@ class BatteryAccessibilityService : AccessibilityService() {
         return n
     }
 
-    private fun startAlert(pct: Int) {
-        stopAllPlayback()
-        alertGeneration++
-        val gen = alertGeneration
-        if (pct == 100) playFullLoop(gen) else playLevelSequence(gen, pct, 0)
-    }
-
-    private fun playBeepThenFile(pct: Int, onFinish: () -> Unit) {
-        try { toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 350) } catch (_: Exception) {}
-        handler.postDelayed({
-            try { tts.playFor(pct) { onFinish() } } catch (_: Exception) { onFinish() }
-        }, 500)
-    }
-
-    private fun playLevelSequence(gen: Int, pct: Int, iteration: Int) {
-        if (gen != alertGeneration) return
-        if (iteration >= 3) return
-        playBeepThenFile(pct) {
-            if (gen != alertGeneration) return@playBeepThenFile
-            handler.postDelayed({
-                if (gen == alertGeneration) playLevelSequence(gen, pct, iteration + 1)
-            }, 1200)
+    private fun trigger(pct: Int) {
+        generation++
+        val gen = generation
+        if (pct == 100) {
+            playLoop(gen)
+        } else {
+            play3x(gen, pct, 0)
         }
     }
 
-    private fun playFullLoop(gen: Int) {
-        if (gen != alertGeneration) return
-        playBeepThenFile(100) {
-            if (gen != alertGeneration) return@playBeepThenFile
+    private fun play3x(gen: Int, pct: Int, iter: Int) {
+        if (gen != generation) return
+        if (iter >= 3) return
+        playOnce(pct) {
+            if (gen != generation) return@playOnce
             handler.postDelayed({
-                if (gen == alertGeneration) playFullLoop(gen)
+                if (gen == generation) play3x(gen, pct, iter + 1)
+            }, 1000)
+        }
+    }
+
+    private fun playLoop(gen: Int) {
+        if (gen != generation) return
+        playOnce(100) {
+            if (gen != generation) return@playOnce
+            handler.postDelayed({
+                if (gen == generation) playLoop(gen)
             }, 1500)
         }
     }
 
-    private fun stopAllPlayback() {
-        alertGeneration++
-        try { tts.stop() } catch (_: Exception) {}
-        try { toneGen.stopTone() } catch (_: Exception) {}
+    private fun playOnce(pct: Int, onDone: () -> Unit) {
+        try { toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 300) } catch (_: Exception) {}
+        handler.postDelayed({
+            try {
+                tts.playFor(pct) { onDone() }
+            } catch (_: Exception) { onDone() }
+        }, 400)
     }
-
-    // ==== NOTIFIKASI (tanpa startForeground) ====
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val ch = NotificationChannel(
-                "speakcharger_acc", "Monitor Baterai",
+                "speakcharger_monitor",
+                "Monitor Baterai",
                 NotificationManager.IMPORTANCE_LOW
             )
             ch.setSound(null, null)
@@ -214,31 +160,39 @@ class BatteryAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun showNotification(status: String) {
-        try {
-            val channelId = "speakcharger_acc"
-
-            val pi = PendingIntent.getActivity(
-                this, 0,
-                Intent(this, MainActivity::class.java),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    private fun buildNotification(): Notification {
+        val channelId = "speakcharger_monitor"
+        if (Build.VERSION.SDK_INT < 26) {
+            val ch = NotificationChannel(
+                channelId, "SpeakCharger", NotificationManager.IMPORTANCE_LOW
             )
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+                .createNotificationChannel(ch)
+        }
 
-            val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-                .format(java.util.Date())
-            val pctStr = if (currentPct >= 0) "$currentPct%" else "--"
-            val statusStr = if (isChargingNow) "charging" else "tidak charging"
+        val pi = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
-            val notif: Notification = NotificationCompat.Builder(this, channelId)
-                .setContentTitle("SpeakCharger Aktif")
-                .setContentText("$status • $pctStr $statusStr • $timeStr")
-                .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
-                .setOngoing(true)
-                .setContentIntent(pi)
-                .build()
+        val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        val pctStr = if (currentPct >= 0) "$currentPct%" else "--"
+        val statusStr = if (isChargingNow) "charging" else "tidak charging"
 
+        return NotificationCompat.Builder(this, channelId)
+            .setContentTitle("SpeakCharger Aktif")
+            .setContentText("Baterai $pctStr - $statusStr • $timeStr")
+            .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
+            .setOngoing(true)
+            .setContentIntent(pi)
+            .build()
+    }
+
+    private fun updateNotification() {
+        try {
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            nm.notify(1, notif)
+            nm.notify(NOTIF_ID, buildNotification())
         } catch (_: Exception) {}
     }
 }
