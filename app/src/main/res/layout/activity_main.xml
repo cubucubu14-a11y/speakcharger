@@ -28,12 +28,23 @@
             android:layout_height="wrap_content"/>
 
         <TextView
+            android:id="@+id/tvAccessStatus"
+            android:text="Aksesibilitas: BELUM AKTIF"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="#F44336"
+            android:gravity="center"
+            android:layout_marginBottom="12dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"/>
+
+        <TextView
             android:id="@+id/tvPrepare"
             android:text=""
             android:textSize="12sp"
             android:textColor="#4CAF50"
             android:visibility="gone"
-            android:layout_marginBottom="16dp"
+            android:layout_marginBottom="12dp"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
 
@@ -48,6 +59,16 @@
             android:layout_height="wrap_content"/>
 
         <Button
+            android:id="@+id/btnAccessibility"
+            android:text="1. AKTIFKAN AKSESIBILITAS"
+            android:textSize="14sp"
+            android:backgroundTint="#E91E63"
+            android:textColor="#FFFFFF"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginBottom="10dp"/>
+
+        <Button
             android:id="@+id/btnSettings"
             android:text="Pengaturan Suara (Import MP3)"
             android:textSize="14sp"
@@ -55,26 +76,6 @@
             android:textColor="#FFFFFF"
             android:layout_width="match_parent"
             android:layout_height="48dp"
-            android:layout_marginBottom="10dp"/>
-
-        <Button
-            android:id="@+id/btnPermissions"
-            android:text="Buka Pengaturan Izin"
-            android:textSize="14sp"
-            android:backgroundTint="#FF9800"
-            android:textColor="#FFFFFF"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginBottom="10dp"/>
-
-        <Button
-            android:id="@+id/btnToggle"
-            android:text="AKTIFKAN"
-            android:textSize="16sp"
-            android:textColor="#FFFFFF"
-            android:backgroundTint="#4CAF50"
-            android:layout_width="match_parent"
-            android:layout_height="56dp"
             android:layout_marginBottom="10dp"/>
 
         <Button
@@ -87,9 +88,10 @@
 
         <TextView
             android:id="@+id/tvStatus"
-            android:text="Service tidak aktif"
-            android:textSize="14sp"
+            android:text=""
+            android:textSize="13sp"
             android:gravity="center"
+            android:lineSpacingExtra="3dp"
             android:layout_marginBottom="24dp"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"/>
