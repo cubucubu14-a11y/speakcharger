@@ -12,15 +12,17 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.app.NotificationCompat
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 class BatteryAccessibilityService : AccessibilityService() {
+
+    private val handler = Handler(Looper.getMainLooper())
 
     private var lastLevel = -1
     private var firstFire = true
@@ -28,7 +30,12 @@ class BatteryAccessibilityService : AccessibilityService() {
     private var isChargingNow = false
     private var isReceiverRegistered = false
 
-    private val CH_MONITOR = "speakcharger_monitor_v7"
+    // Timer state
+    private var chargingStartTime = 0L
+    private var chargingStartBattery = -1
+    private var isTimerActive = false
+
+    private val CH_MONITOR = "speakcharger_monitor_v8"
     private val NOTIF_MONITOR = 1
     private val ALARM_REQUEST_CODE = 7777
 
@@ -39,9 +46,18 @@ class BatteryAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val timerRunnable = object : Runnable {
+        override fun run() {
+            if (isTimerActive && isChargingNow) {
+                updateMonitorNotification()
+                handler.postDelayed(this, 1000)
+            }
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
-        try { createChannel() } catch (e: Exception) { Log.e("SpeakCharger", "Channel err", e) }
+        try { createChannel() } catch (e: Exception) { Log.e("SpeakCharger", "Ch err", e) }
 
         try {
             val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
@@ -53,7 +69,7 @@ class BatteryAccessibilityService : AccessibilityService() {
             }
             isReceiverRegistered = true
         } catch (e: Exception) {
-            Log.e("SpeakCharger", "Register err", e)
+            Log.e("SpeakCharger", "Reg err", e)
         }
 
         try {
@@ -68,6 +84,7 @@ class BatteryAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         if (isReceiverRegistered) {
             try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
             isReceiverRegistered = false
@@ -91,8 +108,28 @@ class BatteryAccessibilityService : AccessibilityService() {
                 status == BatteryManager.BATTERY_STATUS_CHARGING ||
                 status == BatteryManager.BATTERY_STATUS_FULL
 
+        val wasCharging = isChargingNow
+
         currentPct = pct
         isChargingNow = isCharging
+
+        // Timer START
+        if (isCharging && !wasCharging) {
+            chargingStartTime = System.currentTimeMillis()
+            chargingStartBattery = pct
+            isTimerActive = true
+            handler.removeCallbacks(timerRunnable)
+            handler.post(timerRunnable)
+            Log.d("SpeakCharger", "Timer START at $pct%")
+        }
+
+        // Timer STOP
+        if (!isCharging && wasCharging) {
+            isTimerActive = false
+            handler.removeCallbacks(timerRunnable)
+            Log.d("SpeakCharger", "Timer STOP")
+        }
+
         updateMonitorNotification()
 
         if (!isCharging) {
@@ -124,32 +161,24 @@ class BatteryAccessibilityService : AccessibilityService() {
         return target
     }
 
-    // Trigger via AlarmManager (persis cara Clock app)
     private fun triggerViaAlarm(pct: Int) {
         try {
             val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
-
             val intent = Intent(this, AlarmTriggerReceiver::class.java).apply {
                 action = "SPEAKCHARGER_ALARM_TRIGGER"
                 putExtra("pct", pct)
             }
-
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             val pi = PendingIntent.getBroadcast(this, ALARM_REQUEST_CODE, intent, flags)
-
             val triggerAt = SystemClock.elapsedRealtime() + 100
 
             if (Build.VERSION.SDK_INT >= 23) {
                 alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    triggerAt,
-                    pi
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi
                 )
             } else {
                 alarmManager.setExact(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                    triggerAt,
-                    pi
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi
                 )
             }
             Log.d("SpeakCharger", "AlarmManager set for $pct%")
@@ -176,14 +205,35 @@ class BatteryAccessibilityService : AccessibilityService() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+
         val pctStr = if (currentPct >= 0) "$currentPct%" else "--"
-        val statusStr = if (isChargingNow) "charging" else "tidak charging"
+
+        val title: String
+        val text: String
+
+        if (isChargingNow && isTimerActive && chargingStartTime > 0) {
+            val elapsed = System.currentTimeMillis() - chargingStartTime
+            val h = elapsed / 3600000
+            val m = (elapsed % 3600000) / 60000
+            val s = (elapsed % 60000) / 1000
+            val timeStr = String.format(Locale.getDefault(), "%02d:%02d:%02d", h, m, s)
+            val startB = if (chargingStartBattery >= 0) "$chargingStartBattery%" else "--"
+            title = "🔋 Charging"
+            text = "⏱ $timeStr • $startB → $pctStr"
+        } else if (isChargingNow) {
+            title = "🔋 Charging"
+            text = "Baterai $pctStr"
+        } else {
+            title = "SpeakCharger Aktif"
+            text = "Baterai $pctStr - tidak charging"
+        }
+
         return NotificationCompat.Builder(this, CH_MONITOR)
-            .setContentTitle("SpeakCharger Aktif")
-            .setContentText("Baterai $pctStr - $statusStr • $timeStr")
+            .setContentTitle(title)
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(pi)
             .build()
     }
