@@ -1,7 +1,6 @@
 package com.speakcharger.app
 
 import android.accessibilityservice.AccessibilityService
-import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -14,7 +13,6 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.app.NotificationCompat
@@ -29,30 +27,37 @@ class BatteryAccessibilityService : AccessibilityService() {
     private var currentPct = -1
     private var isChargingNow = false
     private var isReceiverRegistered = false
+    private var isFullAlertActive = false
 
-    // Timer state
     private var chargingStartTime = 0L
     private var chargingStartBattery = -1
     private var isTimerActive = false
 
-    private val CH_MONITOR = "speakcharger_monitor_v8"
+    private val CH_MONITOR = "speakcharger_monitor_v9"
     private val NOTIF_MONITOR = 1
-    private val ALARM_REQUEST_CODE = 7777
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != Intent.ACTION_BATTERY_CHANGED) return
-            handleBattery(intent)
+            try {
+                handleBattery(intent)
+            } catch (e: Exception) {
+                Log.e("SpeakCharger", "handleBattery err", e)
+            }
         }
     }
 
-    // ★ Timer update tiap 1 detik + baca baterai langsung
     private val timerRunnable = object : Runnable {
         override fun run() {
-            if (isTimerActive && isChargingNow) {
-                refreshBatteryDirectly()
-                updateMonitorNotification()
-                handler.postDelayed(this, 1000)
+            try {
+                if (isTimerActive && isChargingNow) {
+                    refreshBatteryDirectly()
+                    updateMonitorNotification()
+                    handler.postDelayed(this, 1000)
+                }
+            } catch (e: Exception) {
+                Log.e("SpeakCharger", "Timer err", e)
+                handler.postDelayed(this, 2000)
             }
         }
     }
@@ -98,30 +103,40 @@ class BatteryAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    // ★ Baca baterai langsung dari sistem — gak nunggu broadcast
     private fun refreshBatteryDirectly() {
         try {
-            val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+            val bm = applicationContext.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+                ?: return
             val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            if (pct >= 0 && pct != currentPct) {
+            if (pct in 0..100 && pct != currentPct) {
                 val oldPct = currentPct
                 currentPct = pct
                 Log.d("SpeakCharger", "Direct read: $oldPct -> $pct")
 
-                // Cek kelipatan 5 dari polling
-                if (isChargingNow && !firstFire) {
-                    if (pct > lastLevel) {
+                if (isChargingNow && !firstFire && pct > lastLevel) {
+                    try {
                         val crossed = findCrossedLevel(lastLevel, pct, 5)
                         if (crossed > 0) {
                             lastLevel = pct
-                            triggerViaAlarm(crossed)
+                            if (crossed == 100) {
+                                if (!isFullAlertActive) {
+                                    isFullAlertActive = true
+                                    fireAlert(100)
+                                }
+                            } else {
+                                fireAlert(crossed)
+                            }
                         } else {
                             lastLevel = pct
                         }
+                    } catch (e: Exception) {
+                        Log.e("SpeakCharger", "Crossed err", e)
                     }
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e("SpeakCharger", "Refresh err", e)
+        }
     }
 
     private fun handleBattery(intent: Intent) {
@@ -141,21 +156,27 @@ class BatteryAccessibilityService : AccessibilityService() {
         currentPct = pct
         isChargingNow = isCharging
 
-        // Timer START saat charging baru mulai
+        // Charging START
         if (isCharging && !wasCharging) {
             chargingStartTime = System.currentTimeMillis()
             chargingStartBattery = pct
             isTimerActive = true
+            isFullAlertActive = false
+            firstFire = true
+            lastLevel = pct
             handler.removeCallbacks(timerRunnable)
-            handler.post(timerRunnable)
-            Log.d("SpeakCharger", "Timer START at $pct%")
+            handler.postDelayed(timerRunnable, 1000)
+            startAudioService(AudioPlayerService.ACTION_PREPARE, -1)
+            Log.d("SpeakCharger", "Charging START at $pct%")
         }
 
-        // Timer STOP saat charging berhenti
+        // Charging STOP
         if (!isCharging && wasCharging) {
             isTimerActive = false
+            isFullAlertActive = false
             handler.removeCallbacks(timerRunnable)
-            Log.d("SpeakCharger", "Timer STOP")
+            startAudioService(AudioPlayerService.ACTION_STOP, -1)
+            Log.d("SpeakCharger", "Charging STOP")
         }
 
         updateMonitorNotification()
@@ -169,7 +190,6 @@ class BatteryAccessibilityService : AccessibilityService() {
         if (firstFire) {
             firstFire = false
             lastLevel = pct
-            if (pct == 100) triggerViaAlarm(100)
             return
         }
 
@@ -179,7 +199,16 @@ class BatteryAccessibilityService : AccessibilityService() {
         val crossed = findCrossedLevel(lastLevel, pct, 5)
         lastLevel = pct
 
-        if (crossed > 0) triggerViaAlarm(crossed)
+        if (crossed > 0) {
+            if (crossed == 100) {
+                if (!isFullAlertActive) {
+                    isFullAlertActive = true
+                    fireAlert(100)
+                }
+            } else {
+                fireAlert(crossed)
+            }
+        }
     }
 
     private fun findCrossedLevel(from: Int, to: Int, step: Int): Int {
@@ -189,30 +218,25 @@ class BatteryAccessibilityService : AccessibilityService() {
         return target
     }
 
-    private fun triggerViaAlarm(pct: Int) {
+    private fun startAudioService(action: String, pct: Int) {
         try {
-            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
-            val intent = Intent(this, AlarmTriggerReceiver::class.java).apply {
-                action = "SPEAKCHARGER_ALARM_TRIGGER"
-                putExtra("pct", pct)
+            val intent = Intent(applicationContext, AudioPlayerService::class.java).apply {
+                this.action = action
+                if (pct > 0) putExtra(AudioPlayerService.EXTRA_PCT, pct)
             }
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            val pi = PendingIntent.getBroadcast(this, ALARM_REQUEST_CODE, intent, flags)
-            val triggerAt = SystemClock.elapsedRealtime() + 100
-
-            if (Build.VERSION.SDK_INT >= 23) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi
-                )
+            if (Build.VERSION.SDK_INT >= 26) {
+                startForegroundService(intent)
             } else {
-                alarmManager.setExact(
-                    AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi
-                )
+                startService(intent)
             }
-            Log.d("SpeakCharger", "AlarmManager set for $pct%")
+            Log.d("SpeakCharger", "AudioService cmd: $action pct=$pct")
         } catch (e: Exception) {
-            Log.e("SpeakCharger", "AlarmManager err", e)
+            Log.e("SpeakCharger", "AudioService err", e)
         }
+    }
+
+    private fun fireAlert(pct: Int) {
+        startAudioService(AudioPlayerService.ACTION_PLAY, pct)
     }
 
     private fun createChannel() {
