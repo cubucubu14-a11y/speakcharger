@@ -1,7 +1,12 @@
 package com.speakcharger.app
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
@@ -12,10 +17,19 @@ import android.os.Looper
 import android.os.PowerManager
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import java.io.File
 import java.util.Locale
 
 class AudioPlayerService : Service() {
+
+    companion object {
+        const val ACTION_PREPARE = "com.speakcharger.PREPARE"
+        const val ACTION_PLAY = "com.speakcharger.PLAY"
+        const val ACTION_STOP = "com.speakcharger.STOP"
+        const val EXTRA_PCT = "pct"
+    }
 
     private var mediaPlayer: MediaPlayer? = null
     private var tts: TextToSpeech? = null
@@ -24,24 +38,27 @@ class AudioPlayerService : Service() {
     private var savedAlarmVolume = -1
     private val handler = Handler(Looper.getMainLooper())
 
+    private val CH_ID = "speakcharger_media_v5"
+    private val NOTIF_ID = 999
+
     override fun onCreate() {
         super.onCreate()
+        createChannel()
+        startForegroundCompat()
 
-        // WakeLock PALING AWAL (seperti Clock app)
         try {
             val pm = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = pm.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
-                "SpeakCharger::Alarm"
+                "SpeakCharger::AudioService"
             )
             wakeLock?.setReferenceCounted(false)
-            wakeLock?.acquire(5 * 60 * 1000L)
-            Log.d("SpeakCharger", "WakeLock acquired")
+            wakeLock?.acquire(3 * 60 * 60 * 1000L)
+            Log.d("SpeakCharger", "AudioService WakeLock acquired")
         } catch (e: Exception) {
             Log.e("SpeakCharger", "WakeLock error", e)
         }
 
-        // TTS init
         try {
             tts = TextToSpeech(this) { status ->
                 if (status == TextToSpeech.SUCCESS) {
@@ -53,26 +70,47 @@ class AudioPlayerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val pct = intent?.getIntExtra("pct", -1) ?: -1
-        if (pct <= 0) {
-            stopSelf()
-            return START_NOT_STICKY
+        val action = intent?.action
+        Log.d("SpeakCharger", "AudioService action=$action")
+
+        try {
+            when (action) {
+                ACTION_PLAY -> {
+                    val pct = intent.getIntExtra(EXTRA_PCT, -1)
+                    if (pct > 0) handler.postDelayed({ play(pct) }, 100)
+                }
+                ACTION_STOP -> stopSelf()
+                ACTION_PREPARE, null -> updateNotification("Siap memutar suara")
+            }
+        } catch (e: Exception) {
+            Log.e("SpeakCharger", "onStartCommand error", e)
         }
-        handler.postDelayed({ play(pct) }, 200)
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
-    // Save volume alarm → set max → play → restore
+    private fun startForegroundCompat() {
+        val notif = buildNotification("Siap memutar suara")
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                ServiceCompat.startForeground(
+                    this, NOTIF_ID, notif,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                )
+            } catch (e: Exception) {
+                startForeground(NOTIF_ID, notif)
+            }
+        } else {
+            startForeground(NOTIF_ID, notif)
+        }
+    }
+
     private fun saveAndBoostAlarmVolume() {
         try {
             val am = getSystemService(AUDIO_SERVICE) as AudioManager
             savedAlarmVolume = am.getStreamVolume(AudioManager.STREAM_ALARM)
             val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_ALARM)
             am.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
-            Log.d("SpeakCharger", "Alarm vol: $savedAlarmVolume -> $maxVol")
-        } catch (e: Exception) {
-            Log.e("SpeakCharger", "Volume error", e)
-        }
+        } catch (_: Exception) {}
     }
 
     private fun restoreAlarmVolume() {
@@ -86,62 +124,55 @@ class AudioPlayerService : Service() {
     }
 
     private fun play(pct: Int) {
-        saveAndBoostAlarmVolume()
+        try {
+            saveAndBoostAlarmVolume()
+            updateNotification("Memutar: Baterai $pct%")
 
-        val mp3 = findMp3(pct)
-        if (mp3 != null) {
-            try {
-                mediaPlayer?.release()
-                val attrs = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-
-                mediaPlayer = MediaPlayer().apply {
-                    setAudioAttributes(attrs)
-                    setDataSource(mp3.absolutePath)
-                    setWakeMode(this@AudioPlayerService, PowerManager.PARTIAL_WAKE_LOCK)
-                    setOnPreparedListener {
-                        Log.d("SpeakCharger", "MP3 prepared, starting")
-                        it.start()
+            val mp3 = findMp3(pct)
+            if (mp3 != null) {
+                try {
+                    mediaPlayer?.release()
+                    val attrs = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                    mediaPlayer = MediaPlayer().apply {
+                        setAudioAttributes(attrs)
+                        setDataSource(mp3.absolutePath)
+                        setWakeMode(this@AudioPlayerService, PowerManager.PARTIAL_WAKE_LOCK)
+                        setOnPreparedListener { it.start() }
+                        setOnCompletionListener { onPlayDone() }
+                        setOnErrorListener { _, what, extra ->
+                            Log.e("SpeakCharger", "MP3 error: $what, $extra")
+                            onPlayDone()
+                            true
+                        }
+                        prepareAsync()
                     }
-                    setOnCompletionListener {
-                        Log.d("SpeakCharger", "MP3 done")
-                        cleanupAndStop()
-                    }
-                    setOnErrorListener { _, what, extra ->
-                        Log.e("SpeakCharger", "MP3 error: $what, $extra")
-                        cleanupAndStop()
-                        true
-                    }
-                    prepareAsync()
+                    return
+                } catch (e: Exception) {
+                    Log.e("SpeakCharger", "MP3 err", e)
                 }
-                Log.d("SpeakCharger", "MP3 playing: $pct")
-                return
-            } catch (e: Exception) {
-                Log.e("SpeakCharger", "MP3 err", e)
             }
-        }
 
-        Log.d("SpeakCharger", "No MP3, using TTS")
-        if (ttsReady) {
-            try {
-                val params = android.os.Bundle()
-                params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ALARM)
-                tts?.speak(textForPct(pct), TextToSpeech.QUEUE_FLUSH, params, "a_$pct")
-            } catch (e: Exception) {
-                Log.e("SpeakCharger", "TTS err", e)
+            if (ttsReady) {
+                try {
+                    val params = android.os.Bundle()
+                    params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_ALARM)
+                    tts?.speak(textForPct(pct), TextToSpeech.QUEUE_FLUSH, params, "a_$pct")
+                } catch (_: Exception) {}
             }
+            handler.postDelayed({ onPlayDone() }, 3500)
+        } catch (e: Exception) {
+            Log.e("SpeakCharger", "Play error", e)
         }
-
-        handler.postDelayed({ cleanupAndStop() }, 3500)
     }
 
-    private fun cleanupAndStop() {
+    private fun onPlayDone() {
         try { mediaPlayer?.release() } catch (_: Exception) {}
         mediaPlayer = null
         restoreAlarmVolume()
-        handler.postDelayed({ stopSelf() }, 300)
+        updateNotification("Siap memutar suara")
     }
 
     private fun findMp3(pct: Int): File? {
@@ -178,6 +209,41 @@ class AudioPlayerService : Service() {
         else -> "Baterai $pct persen"
     }
 
+    private fun createChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            val ch = NotificationChannel(
+                CH_ID, "Audio Playback", NotificationManager.IMPORTANCE_LOW
+            )
+            ch.setSound(null, null)
+            ch.enableVibration(false)
+            nm.createNotificationChannel(ch)
+        }
+    }
+
+    private fun buildNotification(text: String): Notification {
+        val pi = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        return NotificationCompat.Builder(this, CH_ID)
+            .setContentTitle("SpeakCharger - Aktif")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(pi)
+            .build()
+    }
+
+    private fun updateNotification(text: String) {
+        try {
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(NOTIF_ID, buildNotification(text))
+        } catch (_: Exception) {}
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
@@ -189,5 +255,6 @@ class AudioPlayerService : Service() {
             if (wakeLock?.isHeld == true) wakeLock?.release()
         } catch (_: Exception) {}
         wakeLock = null
+        Log.d("SpeakCharger", "AudioService destroyed")
     }
 }
