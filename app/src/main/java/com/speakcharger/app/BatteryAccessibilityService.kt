@@ -46,9 +46,11 @@ class BatteryAccessibilityService : AccessibilityService() {
         }
     }
 
+    // ★ Timer update tiap 1 detik + baca baterai langsung
     private val timerRunnable = object : Runnable {
         override fun run() {
             if (isTimerActive && isChargingNow) {
+                refreshBatteryDirectly()
                 updateMonitorNotification()
                 handler.postDelayed(this, 1000)
             }
@@ -96,6 +98,32 @@ class BatteryAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    // ★ Baca baterai langsung dari sistem — gak nunggu broadcast
+    private fun refreshBatteryDirectly() {
+        try {
+            val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+            val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            if (pct >= 0 && pct != currentPct) {
+                val oldPct = currentPct
+                currentPct = pct
+                Log.d("SpeakCharger", "Direct read: $oldPct -> $pct")
+
+                // Cek kelipatan 5 dari polling
+                if (isChargingNow && !firstFire) {
+                    if (pct > lastLevel) {
+                        val crossed = findCrossedLevel(lastLevel, pct, 5)
+                        if (crossed > 0) {
+                            lastLevel = pct
+                            triggerViaAlarm(crossed)
+                        } else {
+                            lastLevel = pct
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun handleBattery(intent: Intent) {
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
@@ -113,7 +141,7 @@ class BatteryAccessibilityService : AccessibilityService() {
         currentPct = pct
         isChargingNow = isCharging
 
-        // Timer START
+        // Timer START saat charging baru mulai
         if (isCharging && !wasCharging) {
             chargingStartTime = System.currentTimeMillis()
             chargingStartBattery = pct
@@ -123,7 +151,7 @@ class BatteryAccessibilityService : AccessibilityService() {
             Log.d("SpeakCharger", "Timer START at $pct%")
         }
 
-        // Timer STOP
+        // Timer STOP saat charging berhenti
         if (!isCharging && wasCharging) {
             isTimerActive = false
             handler.removeCallbacks(timerRunnable)
