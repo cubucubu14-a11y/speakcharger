@@ -15,7 +15,6 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
-import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import java.util.Locale
 
@@ -34,13 +33,13 @@ class BatteryAccessibilityService : AccessibilityService() {
     private var chargingStartBattery = -1
     private var isTimerActive = false
 
-    // ★ Animasi decimal
+    // Animasi decimal
     private var baseBattery = -1
     private var decimalCounter = 0.0
-    private var estimatedMsPerPct = 30000L  // default 30s per 1%
+    private var estimatedMsPerPct = 30000L
     private var lastBaseUpdateTime = 0L
 
-    private val CH_MONITOR = "speakcharger_monitor_v10"
+    private val CH_MONITOR = "speakcharger_monitor_v11"
     private val NOTIF_MONITOR = 1
 
     private val batteryReceiver = object : BroadcastReceiver() {
@@ -52,7 +51,6 @@ class BatteryAccessibilityService : AccessibilityService() {
         }
     }
 
-    // ★ Animasi update tiap 500ms
     private val animRunnable = object : Runnable {
         override fun run() {
             try {
@@ -89,7 +87,9 @@ class BatteryAccessibilityService : AccessibilityService() {
             if (sticky != null) handleBattery(sticky)
         } catch (_: Exception) {}
 
-        updateMonitorNotification()
+        try { updateMonitorNotification() } catch (e: Exception) {
+            Log.e("SpeakCharger", "Init notif err", e)
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
@@ -108,7 +108,6 @@ class BatteryAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    // ★ Update angka desimal animasi
     private fun updateDecimalAnimation() {
         if (baseBattery < 0 || lastBaseUpdateTime <= 0L) return
         val elapsed = System.currentTimeMillis() - lastBaseUpdateTime
@@ -126,7 +125,6 @@ class BatteryAccessibilityService : AccessibilityService() {
                 val oldBase = baseBattery
                 currentPct = pct
 
-                // ★ Reset animasi decimal saat baterai naik
                 if (pct != baseBattery) {
                     val now = System.currentTimeMillis()
                     if (oldBase >= 0 && lastBaseUpdateTime > 0L) {
@@ -177,7 +175,6 @@ class BatteryAccessibilityService : AccessibilityService() {
         currentPct = pct
         isChargingNow = isCharging
 
-        // Charging START
         if (isCharging && !wasCharging) {
             chargingStartTime = System.currentTimeMillis()
             chargingStartBattery = pct
@@ -191,16 +188,15 @@ class BatteryAccessibilityService : AccessibilityService() {
             lastLevel = pct
             handler.removeCallbacks(animRunnable)
             handler.post(animRunnable)
-            startAudioService(AudioPlayerService.ACTION_PREPARE, -1)
+            try { startAudioService(AudioPlayerService.ACTION_PREPARE, -1) } catch (_: Exception) {}
             Log.d("SpeakCharger", "Charging START at $pct%")
         }
 
-        // Charging STOP
         if (!isCharging && wasCharging) {
             isTimerActive = false
             isFullAlertActive = false
             handler.removeCallbacks(animRunnable)
-            startAudioService(AudioPlayerService.ACTION_STOP, -1)
+            try { startAudioService(AudioPlayerService.ACTION_STOP, -1) } catch (_: Exception) {}
             Log.d("SpeakCharger", "Charging STOP")
         }
 
@@ -271,7 +267,6 @@ class BatteryAccessibilityService : AccessibilityService() {
         }
     }
 
-    // ★ Emoji berputar
     private fun getEmoji(): String {
         return when ((System.currentTimeMillis() / 500) % 3) {
             0L -> "🔋"
@@ -287,12 +282,8 @@ class BatteryAccessibilityService : AccessibilityService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val remoteViews = RemoteViews(packageName, R.layout.notification_charging)
-
-        val title = if (isChargingNow) "Charging • Fast Charge" else "SpeakCharger"
         val emoji = getEmoji()
 
-        // Hitung persen dengan desimal
         val animPct = if (isChargingNow && isTimerActive && baseBattery >= 0) {
             (baseBattery + decimalCounter).coerceAtMost(100.0)
         } else if (currentPct >= 0) {
@@ -303,38 +294,38 @@ class BatteryAccessibilityService : AccessibilityService() {
 
         val pctStr = String.format(Locale.US, "%.2f%%", animPct)
 
-        remoteViews.setTextViewText(R.id.notifIcon, emoji)
-        remoteViews.setTextViewText(R.id.notifTitle, title)
-        remoteViews.setTextViewText(R.id.notifPct, pctStr)
-        remoteViews.setProgressBar(R.id.notifProgress, 100, animPct.toInt(), false)
+        val title: String
+        val text: String
 
-        // Timer text
-        val timerText = if (isChargingNow && isTimerActive && chargingStartTime > 0) {
+        if (isChargingNow && isTimerActive && chargingStartTime > 0) {
             val elapsed = System.currentTimeMillis() - chargingStartTime
             val h = elapsed / 3600000
             val m = (elapsed % 3600000) / 60000
             val s = (elapsed % 60000) / 1000
             val timeStr = String.format(Locale.getDefault(), "%02d:%02d:%02d", h, m, s)
             val startB = if (chargingStartBattery >= 0) "$chargingStartBattery%" else "--"
-            "⏱ $timeStr • $startB → ${currentPct}%"
+            title = "$emoji Charging • $pctStr"
+            text = "⏱ $timeStr • $startB → ${currentPct}%"
         } else if (isChargingNow) {
-            "Baterai ${currentPct}%"
+            title = "$emoji Charging • $pctStr"
+            text = "Baterai ${currentPct}%"
         } else {
-            "Baterai ${currentPct}% - tidak charging"
+            title = "SpeakCharger Aktif"
+            text = "Baterai ${currentPct}% - tidak charging"
         }
-        remoteViews.setTextViewText(R.id.notifTimer, timerText)
 
         return NotificationCompat.Builder(this, CH_MONITOR)
             .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
-            .setCustomContentView(remoteViews)
-            .setCustomBigContentView(remoteViews)
-            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setContentTitle(title)
+            .setContentText(text)
+            .setProgress(100, animPct.toInt(), false)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setContentIntent(pi)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
