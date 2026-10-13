@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/notifIcon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🔋"
+            android:textSize="22sp"
+            android:layout_marginEnd="8dp"/>
+
+        <TextView
+            android:id="@+id/notifTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Charging • Fast Charge"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"/>
+
+        <TextView
+            android:id="@+id/notifPct"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="91.51%"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#4CAF50"/>
+    </LinearLayout>
+
+    <ProgressBar
+        android:id="@+id/notifProgress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="8dp"
+        android:layout_marginTop="6dp"
+        android:max="100"
+        android:progress="91"
+        android:progressTint="#4CAF50"/>
+
+    <TextView
+        android:id="@+id/notifTimer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="⏱ 00:20:15 • 91% → 100%"
+        android:textSize="11sp"
+        android:textColor="#B0B0B0"/>
+
+</LinearLayout>
